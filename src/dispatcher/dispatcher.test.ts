@@ -92,7 +92,9 @@ describe('CHK-006: Dispatcher invokes handlers with timeout protection', () => {
     await dispatcher.dispatch(event);
 
     const updated = bus.getStore().getEvent('evt-1');
-    expect(updated?.lastError).toContain('handler exploded');
+    // lastError is a JSON array of all attempt errors
+    const errors = JSON.parse(updated!.lastError!);
+    expect(errors).toContain('handler exploded');
     // Default retry policy: maxRetries=3 → 4 total attempts → retryCount=4, status=dlq
     expect(updated?.retryCount).toBe(4);
     expect(updated?.status).toBe('dlq');
@@ -147,7 +149,10 @@ describe('CHK-017: Handler timeout', () => {
 
   it('times out a slow handler with default timeout', async () => {
     // Override default to a short timeout for testing
-    dispatcher = new Dispatcher(bus.getStore(), bus.getHandlers(), { defaultTimeoutMs: 50 });
+    dispatcher = new Dispatcher(bus.getStore(), bus.getHandlers(), {
+      defaultTimeoutMs: 50,
+      defaultRetryPolicy: { maxRetries: 0, baseDelayMs: 10, maxDelayMs: 100, backoffMultiplier: 2 },
+    });
 
     bus.subscribe('user.created', async () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -158,11 +163,16 @@ describe('CHK-017: Handler timeout', () => {
     await dispatcher.dispatch(event);
 
     const updated = bus.getStore().getEvent('evt-1');
-    expect(updated?.lastError).toContain('timeout');
+    // lastError is a JSON array; at least one entry should mention timeout
+    const errors = JSON.parse(updated!.lastError!);
+    expect(errors.some((e: string) => e.includes('timeout'))).toBe(true);
   });
 
   it('respects per-subscription timeout override', async () => {
-    dispatcher = new Dispatcher(bus.getStore(), bus.getHandlers(), { defaultTimeoutMs: 5000 });
+    dispatcher = new Dispatcher(bus.getStore(), bus.getHandlers(), {
+      defaultTimeoutMs: 5000,
+      defaultRetryPolicy: { maxRetries: 0, baseDelayMs: 10, maxDelayMs: 100, backoffMultiplier: 2 },
+    });
 
     // Subscribe with a short per-subscription timeout
     bus.subscribe('user.created', async () => {
@@ -174,7 +184,9 @@ describe('CHK-017: Handler timeout', () => {
     await dispatcher.dispatch(event);
 
     const updated = bus.getStore().getEvent('evt-1');
-    expect(updated?.lastError).toContain('timeout');
+    // lastError is a JSON array; at least one entry should mention timeout
+    const errors = JSON.parse(updated!.lastError!);
+    expect(errors.some((e: string) => e.includes('timeout'))).toBe(true);
   });
 
   it('does not time out a fast handler', async () => {

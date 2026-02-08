@@ -58,18 +58,15 @@ export class Dispatcher {
     const effectivePolicy = this.resolveRetryPolicy(matching);
     const maxAttempts = effectivePolicy.maxRetries + 1;
 
-    let attemptNumber = 0;
-    let lastError = '';
+    const errorHistory: string[] = [];
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      attemptNumber = attempt;
-
       // Delay before retry (attempt 1 is immediate)
       const delayMs = computeDelay(attempt, effectivePolicy);
       await sleep(delayMs);
 
       let failed = false;
-      lastError = '';
+      let attemptError = '';
 
       for (const sub of matching) {
         const timeoutMs = sub.timeoutMs ?? this.defaultTimeoutMs;
@@ -77,36 +74,38 @@ export class Dispatcher {
           await this.invokeWithTimeout(sub, event, timeoutMs);
         } catch (err) {
           failed = true;
-          lastError = err instanceof Error ? err.message : String(err);
+          attemptError = err instanceof Error ? err.message : String(err);
         }
       }
 
-      // Update retry count in store
-      this.store.updateEventRetry(event.id, attempt, lastError);
+      if (failed) {
+        errorHistory.push(attemptError);
+      }
+
+      // Update retry count in store with full error history
+      const serializedErrors = JSON.stringify(errorHistory);
+      this.store.updateEventRetry(event.id, attempt, serializedErrors);
 
       if (!failed) {
         this.store.updateEventStatus(event.id, 'done');
         return;
       }
 
-      // Emit structured retry log
-      if (attempt < maxAttempts) {
-        const nextDelay = computeDelay(attempt + 1, effectivePolicy);
-        console.warn(JSON.stringify({
-          level: 'warn',
-          event_id: event.id,
-          event_type: event.type,
-          subscription_id: matching.map(s => s.id).join(','),
-          attempt,
-          max_attempts: maxAttempts,
-          delay_ms: nextDelay,
-          error: lastError,
-        }));
-      }
+      // Emit structured retry log for every failed attempt
+      const nextDelay = attempt < maxAttempts ? computeDelay(attempt + 1, effectivePolicy) : 0;
+      console.warn(JSON.stringify({
+        level: 'warn',
+        event_id: event.id,
+        event_type: event.type,
+        subscription_id: matching.map(s => s.id).join(','),
+        attempt,
+        max_attempts: maxAttempts,
+        delay_ms: nextDelay,
+        error: attemptError,
+      }));
     }
 
     // All attempts exhausted → DLQ
-    this.store.updateEventRetry(event.id, attemptNumber, lastError);
     this.store.updateEventStatus(event.id, 'dlq');
   }
 

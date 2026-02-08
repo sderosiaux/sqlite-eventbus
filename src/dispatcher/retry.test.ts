@@ -171,7 +171,7 @@ describe('CHK-008: DLQ routing after max retries exhausted', () => {
     expect(stored?.status).toBe('dlq');
   });
 
-  it('preserves last error message when routing to DLQ', async () => {
+  it('preserves all error messages from each attempt when routing to DLQ', async () => {
     let attempt = 0;
     bus.subscribe('order.placed', async () => {
       attempt++;
@@ -184,7 +184,14 @@ describe('CHK-008: DLQ routing after max retries exhausted', () => {
 
     const stored = bus.getStore().getEvent('evt-retry-1');
     expect(stored?.status).toBe('dlq');
-    expect(stored?.lastError).toContain('failure-attempt-4'); // last attempt
+    // lastError must be a JSON array containing every attempt's error
+    const errors = JSON.parse(stored!.lastError!);
+    expect(Array.isArray(errors)).toBe(true);
+    expect(errors).toHaveLength(4); // 1 initial + 3 retries
+    expect(errors[0]).toBe('failure-attempt-1');
+    expect(errors[1]).toBe('failure-attempt-2');
+    expect(errors[2]).toBe('failure-attempt-3');
+    expect(errors[3]).toBe('failure-attempt-4');
   });
 
   it('sets correct retryCount on DLQ event', async () => {
