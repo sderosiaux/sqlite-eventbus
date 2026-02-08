@@ -14,9 +14,9 @@
 | CHK-009 | EVENTBUS-SPECIFICATION.md:72 | checkbox | **DLQInspector.list()** returns dead events with pagination | 4 | `src/dlq/dlq.test.ts:20` | `5cbcf17` | DONE |
 | CHK-010 | EVENTBUS-SPECIFICATION.md:73 | checkbox | **DLQInspector.retry()** re-enqueues a single dead event for reprocessing | 4 | `src/dlq/dlq.test.ts:73` | `5cbcf17` | DONE |
 | CHK-011 | EVENTBUS-SPECIFICATION.md:74 | checkbox | **DLQInspector.purge()** deletes dead events older than N days | 4 | `src/dlq/dlq.test.ts:113` | `5cbcf17` | DONE |
-| CHK-012 | EVENTBUS-SPECIFICATION.md:75 | checkbox | **EventBus.shutdown()** graceful: wait for in-flight, reject new publishes | 5 | `src/bus/shutdown.test.ts:17` | `2cba90b` | DONE |
-| CHK-013 | EVENTBUS-SPECIFICATION.md:76 | checkbox | **Startup recovery** re-dispatches events stuck in `processing` state (crash recovery) | 5 | `src/bus/recovery.test.ts:7` | `2cba90b` | DONE |
+| CHK-012 | EVENTBUS-SPECIFICATION.md:75 | checkbox | **EventBus.shutdown()** graceful: wait for in-flight, reject new publishes | 5 | `src/bus/shutdown.test.ts:17` | `bdc0fea` | DONE |
+| CHK-013 | EVENTBUS-SPECIFICATION.md:76 | checkbox | **Startup recovery** re-dispatches events stuck in `processing` state (crash recovery) | 5 | `src/bus/recovery.test.ts:7` | `bdc0fea` | DONE |
 | CHK-014 | RETRY-POLICY.md:44 | checkbox | **Jitter**: Add ±10% random jitter to prevent thundering herd | 3 | `src/dispatcher/retry.test.ts:243` | `253a424` | DONE |
-| CHK-015 | RETRY-POLICY.md:45 | checkbox | **Circuit breaker**: If > 50% of events for a subscription fail in a 1-minute window, pause that subscription for 30 seconds before resuming | 5 | `src/dispatcher/circuit-breaker.test.ts:34` | `2cba90b` | DONE |
-| CHK-016 | RETRY-POLICY.md:64 | checkbox | **Retry metrics**: Track total retries, success-after-retry rate, DLQ rate per event type | 5 | `src/dispatcher/metrics.test.ts:33` | `2cba90b` | DONE |
+| CHK-015 | RETRY-POLICY.md:45 | checkbox | **Circuit breaker**: If > 50% of events for a subscription fail in a 1-minute window, pause that subscription for 30 seconds before resuming | 5 | `src/dispatcher/circuit-breaker.test.ts:34` | `bdc0fea` | DONE |
+| CHK-016 | RETRY-POLICY.md:64 | checkbox | **Retry metrics**: Track total retries, success-after-retry rate, DLQ rate per event type | 5 | `src/dispatcher/metrics.test.ts:33` | `bdc0fea` | DONE |
 | CHK-017 | RETRY-POLICY.md:65 | checkbox | **Handler timeout**: Default 30s, configurable per subscription. Kill handler execution after timeout. | 2 | `src/dispatcher/dispatcher.test.ts:106` | `4792b73` | DONE |

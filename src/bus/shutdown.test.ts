@@ -61,4 +61,29 @@ describe('CHK-012: EventBus.shutdown()', () => {
     await bus.shutdown();
     await expect(bus.shutdown()).resolves.toBeUndefined();
   });
+
+  it('shutdown resolves after timeout even if a handler hangs forever', async () => {
+    const hangingBus = new EventBus({ dbPath: ':memory:', shutdownTimeoutMs: 200 });
+
+    // Handler that never resolves
+    const handler: EventHandler = () => new Promise(() => {});
+    hangingBus.subscribe('hang.event', handler, { timeoutMs: 60_000, retry: { maxRetries: 0 } });
+
+    // Fire-and-forget: start publish but don't await — the handler hangs
+    const publishPromise = hangingBus.publish('hang.event', { data: 'stuck' });
+
+    // Give the event a tick to enter the dispatch path
+    await new Promise(r => setTimeout(r, 20));
+
+    const start = Date.now();
+    await hangingBus.shutdown();
+    const elapsed = Date.now() - start;
+
+    // Shutdown should resolve within ~200ms (the timeout), not hang forever
+    expect(elapsed).toBeLessThan(1000);
+    expect(elapsed).toBeGreaterThanOrEqual(100);
+
+    // Clean up: suppress the unhandled rejection from the abandoned publish
+    publishPromise.catch(() => {});
+  }, 15_000);
 });

@@ -7,11 +7,14 @@ import { DEFAULT_RETRY_POLICY, EventBusShutdownError } from '../types/index.js';
 export interface EventBusOptions {
   dbPath: string;
   defaultTimeoutMs?: number;
+  shutdownTimeoutMs?: number;
 }
 
 export interface PublishOptions {
   metadata?: Record<string, string>;
 }
+
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 
 export class EventBus {
   private store: SQLiteStore;
@@ -19,9 +22,11 @@ export class EventBus {
   /** In-memory handler registry keyed by subscription ID. */
   private handlers: Map<string, Subscription> = new Map();
   private isShutDown = false;
+  private shutdownTimeoutMs: number;
 
   constructor(opts: EventBusOptions) {
     this.store = new SQLiteStore(opts.dbPath);
+    this.shutdownTimeoutMs = opts.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
     this.dispatcher = new Dispatcher(this.store, this.handlers, {
       defaultTimeoutMs: opts.defaultTimeoutMs,
     });
@@ -87,12 +92,15 @@ export class EventBus {
   }
 
   /**
-   * Graceful shutdown: reject new publishes, wait for in-flight, close DB.
+   * Graceful shutdown: reject new publishes, wait for in-flight (with timeout), close DB.
    */
   async shutdown(): Promise<void> {
     if (this.isShutDown) return;
     this.isShutDown = true;
-    await this.dispatcher.drain();
+    await Promise.race([
+      this.dispatcher.drain(),
+      new Promise<void>(resolve => setTimeout(resolve, this.shutdownTimeoutMs)),
+    ]);
     this.store.close();
   }
 
