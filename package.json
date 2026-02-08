@@ -1,19 +1,20 @@
 {
   "name": "eventbus",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "uuid": "^11.0.0"
+  },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
-  },
-  "dependencies": {
-    "better-sqlite3": "^11.7.0"
   }
 }

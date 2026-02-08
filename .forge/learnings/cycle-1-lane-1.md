@@ -1,21 +1,24 @@
 # Learnings — Cycle 1, Lane 1: foundation-types-and-storage
 
 ## FRICTION
-- SQLite `:memory:` databases silently ignore `PRAGMA journal_mode = WAL` and return `memory` instead. WAL test must use a file-based DB with tmpdir cleanup (`src/store/store.test.ts:37`).
-- `better-sqlite3` is a JS package; TypeScript types come from `@types/better-sqlite3`. The pragma return type is `Array<{ journal_mode: string }>`, not a plain string (`src/store/index.ts:37`).
+- SQLite `:memory:` silently ignores `PRAGMA journal_mode = WAL` and returns `memory`. WAL test must use file-based DB with tmpdir cleanup (`src/store/store.test.ts:18-20`).
+- Purge test initially used `created_at` logic but `purgeDlqEvents` uses `dlq_at`. Since `moveEventToDlq` sets `dlq_at = now()`, test needed `rawExec` to backdate `dlq_at` for the old event (`src/store/store.test.ts:263`).
+- `better-sqlite3` pragma return type is `Array<{ journal_mode: string }>`, not a plain string (`src/store/store.test.ts:42`).
 
 ## GAP
-- Spec doesn't specify whether `Subscription` in the DB includes the handler function. Handlers are JS functions and can't be serialized — spec is silent on this. Created `SubscriptionRow` (without handler) for persistence vs. `Subscription` (with handler) for in-memory registry.
-- Spec doesn't specify what `EventBus.subscribe()` returns. Decided it returns the subscription ID (string) since `unsubscribe()` needs it.
-- Spec mentions `subscribe()` with optional `RetryPolicy` override (`bus.subscribe('order.*', handler, { retry: {...} })`), but that's a lane-3 concern. Left the API simple for now — only `(eventType, handler)`.
+- Spec doesn't specify whether `Subscription` in DB includes handler. Handlers are JS functions and can't be serialized. Created `SubscriptionRow` (without handler) for persistence vs `Subscription` (with handler) for in-memory registry (`src/types/index.ts:26-35`).
+- Spec doesn't explicitly define a `dlq_at` column in the original schema (EVENTBUS-SPECIFICATION.md:144-165) — it's a future-work item (EVENTBUS-SPECIFICATION.md:250). Implemented as part of CHK-015 by adding it to the CREATE TABLE.
 
 ## DECISION
-- **SubscriptionRow vs Subscription split** (`src/types/index.ts:44`): DB stores subscription metadata only; handler lives in a `Map<string, Subscription>` in EventBus memory. This avoids serialization complexity and matches the "in-process" design (spec: "no pub/sub across processes").
-- **`destroy()` vs `shutdown()`**: Added `destroy()` to EventBus for test teardown. `shutdown()` is lane 5 (graceful with in-flight handling). `destroy()` is a raw close.
-- **`getHandlers()` / `getStore()` accessors** (`src/bus/index.ts:48-53`): Exposed for Dispatcher (lane 2) to access internals. Kept as explicit methods rather than public fields.
+- **SubscriptionRow vs Subscription split** (`src/types/index.ts:26-35`): DB stores subscription metadata only; handler lives in an in-memory `Map`. Matches "in-process" design.
+- **Prepared statement caching via Map** (`src/store/index.ts:80-87`): Statements cached on first `prepare()` and reused. Key is the raw SQL string. Simpler than class property per statement — more flexible for adding new queries in later lanes.
+- **`purgeDlqEvents` uses `dlq_at` not `created_at`** (`src/store/index.ts:145`): CHK-015 adds `dlq_at` column specifically so purge operates on DLQ entry time. Previous cycle used `created_at` which was documented as debt.
+- **`rawExec` escape hatch** (`src/store/index.ts:152`): Exposed for test backdating. Not part of production API but needed for realistic purge testing.
+- **`moveEventToDlq` as single atomic update** (`src/store/index.ts:118-122`): Sets `status='dlq'`, `last_error`, `dlq_at`, and `updated_at` in one statement. Cleaner than separate `updateEventStatus` + `updateEventRetry`.
 
 ## SURPRISE
-- `better-sqlite3` operations are synchronous (not async). The entire store layer is sync, which simplifies the code significantly. Async only enters at the handler level.
+- `better-sqlite3` synchronous API means the entire store layer is sync. No async/await needed until handler invocation in later lanes.
+- Statement cache `Map<string, Statement>` works cleanly — `better-sqlite3` prepared statements are reusable across calls with different bind parameters.
 
 ## DEBT
-- No prepared statement caching — each call creates a new prepared statement. Acceptable for v1; `better-sqlite3` handles this efficiently internally. Proper fix: cache statements as class properties.
+- `rawExec` is exposed publicly for test use. Could be test-only via subclass, but not worth the complexity for an internal library.

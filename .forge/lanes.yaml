@@ -2,30 +2,30 @@
 lanes:
   - id: 1
     name: "foundation-types-and-storage"
-    checkboxes: [CHK-001, CHK-002, CHK-004, CHK-005]
-    description: "Shared types/interfaces, SQLiteStore with WAL + auto-migration, subscribe and unsubscribe (store-layer registration)"
+    checkboxes: [CHK-001, CHK-002, CHK-014, CHK-015]
+    description: "Shared types, SQLiteStore with WAL/auto-migration/CRUD, prepared statement caching, dlq_at timestamp column"
     depends_on: []
 
   - id: 2
-    name: "core-dispatch-pipeline"
-    checkboxes: [CHK-003, CHK-006, CHK-017]
-    description: "EventBus.publish(), Dispatcher handler invocation, handler timeout protection"
+    name: "core-eventbus"
+    checkboxes: [CHK-003, CHK-004, CHK-005]
+    description: "EventBus class: publish (persist+dispatch), subscribe (with SubscribeOptions), unsubscribe"
     depends_on: [1]
 
   - id: 3
-    name: "retry-and-dlq-routing"
-    checkboxes: [CHK-007, CHK-008, CHK-014]
-    description: "Exponential backoff retry, DLQ routing after max retries, jitter on delay"
-    depends_on: [2]
+    name: "dispatch-and-retry"
+    checkboxes: [CHK-006, CHK-007, CHK-008, CHK-017, CHK-020]
+    description: "Dispatcher: handler invocation with timeout, exponential backoff retry with jitter, DLQ routing after max retries"
+    depends_on: [1, 2]
 
   - id: 4
     name: "dlq-inspector"
     checkboxes: [CHK-009, CHK-010, CHK-011]
-    description: "DLQInspector list/retry/purge operations with pagination"
+    description: "DLQInspector: list with pagination, retry single event (full reset), purge by age. Depends only on store."
     depends_on: [1]
 
   - id: 5
     name: "lifecycle-and-resilience"
-    checkboxes: [CHK-012, CHK-013, CHK-015, CHK-016]
-    description: "Graceful shutdown, crash recovery, circuit breaker, retry metrics"
-    depends_on: [2, 3]
+    checkboxes: [CHK-012, CHK-013, CHK-016, CHK-018, CHK-019]
+    description: "Graceful shutdown with timeout, crash recovery, circuit breaker with half-open probe, retry metrics"
+    depends_on: [1, 2, 3]

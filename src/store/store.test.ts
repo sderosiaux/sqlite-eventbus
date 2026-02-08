@@ -1,136 +1,336 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { unlinkSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
 import { SQLiteStore } from './index.js';
-import type { Event, EventStatus } from '../types/index.js';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import type { EventStatus } from '../types/index.js';
 
-describe('CHK-002: SQLiteStore', () => {
+// WAL requires file-based DB (learning from cycle-1-lane-1)
+function createTmpDbPath(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eventbus-test-'));
+  return path.join(dir, 'test.db');
+}
+
+function cleanupDb(dbPath: string): void {
+  const dir = path.dirname(dbPath);
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // best effort
+  }
+}
+
+describe('SQLiteStore', () => {
   let store: SQLiteStore;
+  let dbPath: string;
 
   beforeEach(() => {
-    // In-memory database for test isolation
-    store = new SQLiteStore(':memory:');
+    dbPath = createTmpDbPath();
+    store = new SQLiteStore(dbPath);
   });
 
   afterEach(() => {
     store.close();
+    cleanupDb(dbPath);
   });
 
-  describe('initialization', () => {
-    it('creates tables on construction (auto-migration)', () => {
-      // If we can insert and query, tables exist
-      const event = makeEvent('evt-1', 'test.init');
-      store.insertEvent(event);
-      const fetched = store.getEvent('evt-1');
-      expect(fetched).toBeDefined();
-      expect(fetched!.id).toBe('evt-1');
-    });
+  // --- WAL mode ---
 
-    it('uses WAL mode on file-based database', () => {
-      const dbPath = join(tmpdir(), `eventbus-test-${randomUUID()}.db`);
-      const fileStore = new SQLiteStore(dbPath);
-      try {
-        expect(fileStore.getJournalMode()).toBe('wal');
-      } finally {
-        fileStore.close();
-        for (const suffix of ['', '-wal', '-shm']) {
-          const p = dbPath + suffix;
-          if (existsSync(p)) unlinkSync(p);
-        }
-      }
-    });
+  it('uses WAL journal mode for file-based DB', () => {
+    // Learning from cycle-1-lane-1: pragma returns array
+    const result = store.pragma('journal_mode') as Array<{ journal_mode: string }>;
+    expect(result[0].journal_mode).toBe('wal');
   });
 
-  describe('event CRUD', () => {
-    it('inserts and retrieves an event', () => {
-      const event = makeEvent('evt-2', 'user.created', { name: 'Bob' });
-      store.insertEvent(event);
-      const fetched = store.getEvent('evt-2');
-      expect(fetched).toBeDefined();
-      expect(fetched!.type).toBe('user.created');
-      expect(fetched!.payload).toEqual({ name: 'Bob' });
-      expect(fetched!.status).toBe('pending');
-      expect(fetched!.retryCount).toBe(0);
-    });
+  // --- Auto-migration ---
 
-    it('updates event status atomically', () => {
-      const event = makeEvent('evt-3', 'order.placed');
-      store.insertEvent(event);
-      store.updateEventStatus('evt-3', 'processing');
-      const fetched = store.getEvent('evt-3');
-      expect(fetched!.status).toBe('processing');
-    });
-
-    it('updates event error and retry count', () => {
-      const event = makeEvent('evt-4', 'order.placed');
-      store.insertEvent(event);
-      store.updateEventRetry('evt-4', 2, 'Handler timeout');
-      const fetched = store.getEvent('evt-4');
-      expect(fetched!.retryCount).toBe(2);
-      expect(fetched!.lastError).toBe('Handler timeout');
-    });
-
-    it('queries events by status', () => {
-      store.insertEvent(makeEvent('evt-a', 'x', {}, 'pending'));
-      store.insertEvent(makeEvent('evt-b', 'x', {}, 'processing'));
-      store.insertEvent(makeEvent('evt-c', 'x', {}, 'pending'));
-      const pending = store.getEventsByStatus('pending');
-      expect(pending).toHaveLength(2);
-      expect(pending.map(e => e.id).sort()).toEqual(['evt-a', 'evt-c']);
-    });
-
-    it('serializes and deserializes payload as JSON', () => {
-      const complex = { nested: { array: [1, 2, 3], flag: true } };
-      store.insertEvent(makeEvent('evt-5', 'test.json', complex));
-      const fetched = store.getEvent('evt-5');
-      expect(fetched!.payload).toEqual(complex);
-    });
-
-    it('serializes and deserializes metadata as JSON', () => {
-      const event = makeEvent('evt-6', 'test.meta');
-      event.metadata = { traceId: 'abc', source: 'test' };
-      store.insertEvent(event);
-      const fetched = store.getEvent('evt-6');
-      expect(fetched!.metadata).toEqual({ traceId: 'abc', source: 'test' });
-    });
+  it('auto-creates events table on construction', () => {
+    const tables = store.pragma("table_info('events')") as Array<{ name: string }>;
+    const columns = tables.map((t) => t.name);
+    expect(columns).toContain('id');
+    expect(columns).toContain('type');
+    expect(columns).toContain('payload');
+    expect(columns).toContain('status');
+    expect(columns).toContain('retry_count');
+    expect(columns).toContain('last_error');
+    expect(columns).toContain('metadata');
+    expect(columns).toContain('created_at');
+    expect(columns).toContain('updated_at');
+    expect(columns).toContain('dlq_at'); // CHK-015
   });
 
-  describe('subscription CRUD', () => {
-    it('inserts and retrieves a subscription', () => {
-      store.insertSubscription({ id: 'sub-1', eventType: 'user.*', createdAt: new Date() });
-      const subs = store.getAllSubscriptions();
-      expect(subs).toHaveLength(1);
-      expect(subs[0].eventType).toBe('user.*');
+  it('auto-creates subscriptions table on construction', () => {
+    const tables = store.pragma("table_info('subscriptions')") as Array<{ name: string }>;
+    const columns = tables.map((t) => t.name);
+    expect(columns).toContain('id');
+    expect(columns).toContain('event_type');
+    expect(columns).toContain('created_at');
+  });
+
+  it('creates indexes on events.status and events.type', () => {
+    const indexes = store.pragma('index_list(events)') as Array<{ name: string }>;
+    const names = indexes.map((i) => i.name);
+    expect(names).toContain('idx_events_status');
+    expect(names).toContain('idx_events_type');
+  });
+
+  // --- Event CRUD ---
+
+  it('inserts and retrieves an event', () => {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    store.insertEvent({
+      id,
+      type: 'user.created',
+      payload: JSON.stringify({ name: 'Alice' }),
+      status: 'pending',
+      retryCount: 0,
+      createdAt: now,
+      updatedAt: now,
     });
 
-    it('deletes a subscription by ID', () => {
-      store.insertSubscription({ id: 'sub-2', eventType: 'order.*', createdAt: new Date() });
-      store.deleteSubscription('sub-2');
-      const subs = store.getAllSubscriptions();
-      expect(subs).toHaveLength(0);
+    const event = store.getEvent(id);
+    expect(event).toBeDefined();
+    expect(event!.id).toBe(id);
+    expect(event!.type).toBe('user.created');
+    expect(event!.status).toBe('pending');
+    expect(JSON.parse(event!.payload)).toEqual({ name: 'Alice' });
+  });
+
+  it('returns undefined for non-existent event', () => {
+    expect(store.getEvent('nonexistent')).toBeUndefined();
+  });
+
+  it('updates event status', () => {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    store.insertEvent({
+      id,
+      type: 'test',
+      payload: '{}',
+      status: 'pending',
+      retryCount: 0,
+      createdAt: now,
+      updatedAt: now,
     });
 
-    it('returns false when deleting non-existent subscription', () => {
-      const deleted = store.deleteSubscription('non-existent');
-      expect(deleted).toBe(false);
+    store.updateEventStatus(id, 'processing');
+    expect(store.getEvent(id)!.status).toBe('processing');
+
+    store.updateEventStatus(id, 'done');
+    expect(store.getEvent(id)!.status).toBe('done');
+  });
+
+  it('updates event retry info (retryCount, lastError)', () => {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    store.insertEvent({
+      id,
+      type: 'test',
+      payload: '{}',
+      status: 'processing',
+      retryCount: 0,
+      createdAt: now,
+      updatedAt: now,
     });
+
+    const errors = JSON.stringify(['Error 1']);
+    store.updateEventRetry(id, 1, errors);
+    const event = store.getEvent(id)!;
+    expect(event.retry_count).toBe(1);
+    expect(event.last_error).toBe(errors);
+  });
+
+  it('moves event to DLQ with dlq_at timestamp (CHK-015)', () => {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    store.insertEvent({
+      id,
+      type: 'test',
+      payload: '{}',
+      status: 'processing',
+      retryCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    store.moveEventToDlq(id, JSON.stringify(['final error']));
+    const event = store.getEvent(id)!;
+    expect(event.status).toBe('dlq');
+    expect(event.dlq_at).toBeDefined();
+    expect(event.last_error).toBe(JSON.stringify(['final error']));
+  });
+
+  // --- Events by status ---
+
+  it('queries events by status', () => {
+    const now = new Date().toISOString();
+    for (let i = 0; i < 3; i++) {
+      store.insertEvent({
+        id: randomUUID(),
+        type: 'test',
+        payload: '{}',
+        status: i < 2 ? 'pending' : 'done',
+        retryCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    expect(store.getEventsByStatus('pending')).toHaveLength(2);
+    expect(store.getEventsByStatus('done')).toHaveLength(1);
+    expect(store.getEventsByStatus('dlq')).toHaveLength(0);
+  });
+
+  // --- DLQ queries (for lane 4, but store methods needed) ---
+
+  it('getDlqEvents returns events with offset/limit pagination', () => {
+    const now = new Date().toISOString();
+    for (let i = 0; i < 5; i++) {
+      store.insertEvent({
+        id: randomUUID(),
+        type: 'test',
+        payload: '{}',
+        status: 'processing',
+        retryCount: 3,
+        createdAt: new Date(Date.now() - i * 1000).toISOString(),
+        updatedAt: now,
+      });
+    }
+    // Move all to DLQ
+    const events = store.getEventsByStatus('processing');
+    for (const e of events) {
+      store.moveEventToDlq(e.id, '"error"');
+    }
+
+    const page1 = store.getDlqEvents(0, 2);
+    expect(page1).toHaveLength(2);
+
+    const page2 = store.getDlqEvents(2, 2);
+    expect(page2).toHaveLength(2);
+
+    const page3 = store.getDlqEvents(4, 2);
+    expect(page3).toHaveLength(1);
+  });
+
+  it('resetDlqEvent resets status, retry_count, last_error, and dlq_at', () => {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    store.insertEvent({
+      id,
+      type: 'test',
+      payload: '{}',
+      status: 'processing',
+      retryCount: 3,
+      createdAt: now,
+      updatedAt: now,
+      lastError: JSON.stringify(['e1', 'e2', 'e3']),
+    });
+    store.moveEventToDlq(id, JSON.stringify(['e1', 'e2', 'e3']));
+
+    store.resetDlqEvent(id);
+    const event = store.getEvent(id)!;
+    expect(event.status).toBe('pending');
+    expect(event.retry_count).toBe(0);
+    expect(event.last_error).toBeNull();
+    expect(event.dlq_at).toBeNull();
+  });
+
+  it('purgeDlqEvents deletes events with dlq_at older than cutoff (inclusive)', () => {
+    const now = new Date().toISOString();
+
+    store.insertEvent({
+      id: 'old-event',
+      type: 'test',
+      payload: '{}',
+      status: 'processing',
+      retryCount: 3,
+      createdAt: now,
+      updatedAt: now,
+    });
+    store.insertEvent({
+      id: 'recent-event',
+      type: 'test',
+      payload: '{}',
+      status: 'processing',
+      retryCount: 3,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    store.moveEventToDlq('old-event', '"err"');
+    store.moveEventToDlq('recent-event', '"err"');
+
+    // Backdate old-event's dlq_at to 10 days ago
+    const oldDlqAt = new Date(Date.now() - 10 * 86400000).toISOString();
+    store.rawExec('UPDATE events SET dlq_at = ? WHERE id = ?', oldDlqAt, 'old-event');
+
+    // Purge events with dlq_at older than 7 days
+    const cutoff = new Date(Date.now() - 7 * 86400000).toISOString();
+    const deleted = store.purgeDlqEvents(cutoff);
+    expect(deleted).toBe(1);
+    expect(store.getEvent('old-event')).toBeUndefined();
+    expect(store.getEvent('recent-event')).toBeDefined();
+  });
+
+  // --- Subscription CRUD ---
+
+  it('inserts and retrieves a subscription', () => {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    store.insertSubscription({ id, eventType: 'user.*', createdAt: now });
+
+    const sub = store.getSubscription(id);
+    expect(sub).toBeDefined();
+    expect(sub!.id).toBe(id);
+    expect(sub!.event_type).toBe('user.*');
+  });
+
+  it('deletes a subscription', () => {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    store.insertSubscription({ id, eventType: 'user.*', createdAt: now });
+
+    store.deleteSubscription(id);
+    expect(store.getSubscription(id)).toBeUndefined();
+  });
+
+  it('lists all subscriptions', () => {
+    const now = new Date().toISOString();
+    store.insertSubscription({ id: randomUUID(), eventType: 'user.*', createdAt: now });
+    store.insertSubscription({ id: randomUUID(), eventType: 'order.*', createdAt: now });
+
+    expect(store.getAllSubscriptions()).toHaveLength(2);
+  });
+
+  // --- Prepared statement caching (CHK-014) ---
+
+  it('reuses prepared statements across calls (CHK-014)', () => {
+    const now = new Date().toISOString();
+    // Multiple inserts should reuse the same cached statement
+    for (let i = 0; i < 10; i++) {
+      store.insertEvent({
+        id: randomUUID(),
+        type: 'test',
+        payload: '{}',
+        status: 'pending',
+        retryCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    // If caching works, these should all succeed without issue
+    expect(store.getEventsByStatus('pending')).toHaveLength(10);
+    // Verify cache is populated via the exposed cache size
+    expect(store.getCacheSize()).toBeGreaterThan(0);
+  });
+
+  // --- Close ---
+
+  it('close() is idempotent', () => {
+    store.close();
+    // Second close should not throw
+    expect(() => store.close()).not.toThrow();
   });
 });
-
-function makeEvent(
-  id: string,
-  type: string,
-  payload: unknown = {},
-  status: EventStatus = 'pending',
-): Event {
-  return {
-    id,
-    type,
-    payload,
-    createdAt: new Date(),
-    status,
-    retryCount: 0,
-  };
-}

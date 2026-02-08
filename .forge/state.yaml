@@ -1,8 +1,11 @@
-cycle: 2
-phase: done
+cycle: 1
+phase: implement
 max_cycles: 1
-current_lane: 0
-lane_attempt: 0
+current_lane: 1
+lane_attempt: 1
 max_lane_attempts: 3
 spec_path: /private/tmp/forge-demo/specs
 preserve_paths: []
+implement_session_id: ''
+resume_sessions: true
+reviewer: codex
