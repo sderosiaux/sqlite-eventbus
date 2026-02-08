@@ -42,7 +42,7 @@ delay(attempt) = min(baseDelayMs * backoffMultiplier^(attempt - 1), maxDelayMs)
 | 7 | 30000ms (capped) |
 
 - [ ] **Jitter**: Add ±10% random jitter to prevent thundering herd
-- [ ] **Circuit breaker**: If > 50% of events for a subscription fail in a 1-minute window, pause that subscription for 30 seconds before resuming
+- [ ] **Circuit breaker**: If > 50% of events for a subscription fail in a 1-minute window (minimum 4 samples to avoid premature tripping), pause that subscription for 30 seconds before resuming. Circuit-broken subscriptions are **skipped** during dispatch; other healthy subscriptions process normally. Circuit breaker state lives on Dispatcher (in-memory, not persisted). <!-- forge:cycle-1 -->
 
 ## Retry Observability
 
@@ -62,4 +62,4 @@ Each retry attempt must emit a structured log entry:
 ```
 
 - [ ] **Retry metrics**: Track total retries, success-after-retry rate, DLQ rate per event type
-- [ ] **Handler timeout**: Default 30s, configurable per subscription. Kill handler execution after timeout.
+- [ ] **Handler timeout**: Default 30s, configurable per subscription via `SubscribeOptions.timeoutMs`. Kill is best-effort via `Promise.race` — timed-out handler may continue in background. <!-- forge:cycle-1 -->

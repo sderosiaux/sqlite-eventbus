@@ -20,3 +20,6 @@
 | CHK-015 | RETRY-POLICY.md:45 | checkbox | **Circuit breaker**: If > 50% of events for a subscription fail in a 1-minute window, pause that subscription for 30 seconds before resuming | 5 | `src/dispatcher/circuit-breaker.test.ts:34` | `bdc0fea` | DONE |
 | CHK-016 | RETRY-POLICY.md:64 | checkbox | **Retry metrics**: Track total retries, success-after-retry rate, DLQ rate per event type | 5 | `src/dispatcher/metrics.test.ts:33` | `bdc0fea` | DONE |
 | CHK-017 | RETRY-POLICY.md:65 | checkbox | **Handler timeout**: Default 30s, configurable per subscription. Kill handler execution after timeout. | 2 | `src/dispatcher/dispatcher.test.ts:106` | `4792b73` | DONE |
+| CHK-018 | derived | cycle-1-lane-1 | **Prepared statement caching** in SQLiteStore — cache statements as class properties instead of creating new ones per call | - | - | - | PENDING |
+| CHK-019 | derived | cycle-1-lane-4 | **Add `dlq_at` timestamp** to events table — `purge()` currently uses `created_at`, not DLQ entry time | - | - | - | PENDING |
+| CHK-020 | derived | cycle-1-lane-5 | **Circuit breaker half-open probe** — current resume is a simple reset; proper half-open sends a single probe event before fully reopening | - | - | - | PENDING |
