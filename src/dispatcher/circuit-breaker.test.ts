@@ -119,6 +119,40 @@ describe('Circuit Breaker (CHK-018)', () => {
     expect(callCount).toBe(5);
   });
 
+  it('records per-sub success outcomes even when a later sub fails in same dispatch', async () => {
+    const subs = new Map<string, Subscription>();
+    let healthyCalls = 0;
+    let failCalls = 0;
+
+    // Healthy sub first (always succeeds)
+    const sHealthy = makeSub('test.*', async () => {
+      healthyCalls++;
+    }, { retry: { maxRetries: 0, baseDelayMs: 1 } });
+
+    // Failing sub second (always fails)
+    const sFail = makeSub('test.*', async () => {
+      failCalls++;
+      throw new Error('fail');
+    }, { retry: { maxRetries: 0, baseDelayMs: 1 } });
+
+    subs.set(sHealthy.id, sHealthy);
+    subs.set(sFail.id, sFail);
+
+    // Dispatch 4 events: healthy succeeds, failing fails each time
+    // Healthy sub should get 4 success outcomes → NOT tripped
+    // Failing sub should get 4 failure outcomes → tripped
+    for (let i = 0; i < 4; i++) {
+      await dispatcher.dispatch(makeEvent(store), subs);
+    }
+    expect(healthyCalls).toBe(4);
+    expect(failCalls).toBe(4);
+
+    // 5th dispatch: failing sub circuit-broken, healthy still runs
+    await dispatcher.dispatch(makeEvent(store), subs);
+    expect(healthyCalls).toBe(5); // still active — success outcomes prevent tripping
+    expect(failCalls).toBe(4); // skipped — circuit open
+  });
+
   it('only affects the specific subscription, not others', async () => {
     const subs = new Map<string, Subscription>();
     let failCalls = 0;
@@ -224,6 +258,44 @@ describe('Circuit Breaker Half-Open Probe (CHK-016)', () => {
       // Second dispatch: circuit is closed, handler should run normally
       await dispatcher.dispatch(makeEvent(store), subs);
       expect(calls).toBe(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('allows only single probe in half-open state; concurrent dispatches are blocked', async () => {
+    vi.useFakeTimers();
+    try {
+      const subs = new Map<string, Subscription>();
+      let calls = 0;
+      // Handler: fails first 4 (trips circuit), then succeeds (probe)
+      const s = makeSub('test.*', async () => {
+        calls++;
+        if (calls <= 4) throw new Error('fail');
+      }, { retry: { maxRetries: 0, baseDelayMs: 1 } });
+      subs.set(s.id, s);
+
+      // Trip circuit
+      for (let i = 0; i < 4; i++) {
+        await dispatcher.dispatch(makeEvent(store), subs);
+      }
+      expect(calls).toBe(4);
+
+      // Advance past 30s → half-open
+      vi.advanceTimersByTime(30_001);
+
+      // Fire two dispatches concurrently — only the first should be the probe
+      const event1 = makeEvent(store);
+      const event2 = makeEvent(store);
+      const [, ] = await Promise.all([
+        dispatcher.dispatch(event1, subs),
+        dispatcher.dispatch(event2, subs),
+      ]);
+
+      // Only probe (event1) should have called the handler; event2 should be skipped
+      expect(calls).toBe(5); // probe handler ran once, not twice
+      // event2 was skipped (no active subs while probe in flight)
+      expect(store.getEvent(event2.id)!.status).toBe('done');
     } finally {
       vi.useRealTimers();
     }

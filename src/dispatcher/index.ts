@@ -38,6 +38,7 @@ interface CircuitBreakerState {
   outcomes: { timestamp: number; success: boolean }[];
   state: 'closed' | 'open' | 'half-open';
   openedAt: number;
+  probeInFlight: boolean;
 }
 
 export class Dispatcher {
@@ -69,7 +70,7 @@ export class Dispatcher {
   private getCircuitBreaker(subId: string): CircuitBreakerState {
     let cb = this.circuitBreakers.get(subId);
     if (!cb) {
-      cb = { outcomes: [], state: 'closed', openedAt: 0 };
+      cb = { outcomes: [], state: 'closed', openedAt: 0, probeInFlight: false };
       this.circuitBreakers.set(subId, cb);
     }
     return cb;
@@ -85,6 +86,7 @@ export class Dispatcher {
     cb.outcomes = cb.outcomes.filter((o) => o.timestamp > cutoff);
 
     if (cb.state === 'half-open') {
+      cb.probeInFlight = false;
       // Probe result
       if (success) {
         cb.state = 'closed';
@@ -115,12 +117,15 @@ export class Dispatcher {
       const elapsed = Date.now() - cb.openedAt;
       if (elapsed >= CIRCUIT_BREAKER_PAUSE_MS) {
         cb.state = 'half-open';
-        return false; // allow probe
+        cb.probeInFlight = true;
+        return false; // allow single probe
       }
       return true;
     }
 
-    // half-open: allow the probe through
+    // half-open: block if probe already in flight
+    if (cb.probeInFlight) return true;
+    cb.probeInFlight = true;
     return false;
   }
 
@@ -181,7 +186,10 @@ export class Dispatcher {
         return;
       }
 
-      // Record failure outcome for the failed subscription
+      // Record per-sub outcomes: success for subs that ran before the failure, failure for the failed sub
+      for (const succeededId of result.succeededSubIds) {
+        this.recordOutcome(succeededId, true);
+      }
       if (result.failedSubscriptionId) {
         this.recordOutcome(result.failedSubscriptionId, false);
       }
@@ -221,22 +229,24 @@ export class Dispatcher {
     }
   }
 
-  /** Run all matching handlers sequentially. Returns on first failure. */
+  /** Run all matching handlers sequentially. Returns on first failure, with list of succeeded sub IDs. */
   private async runHandlers(
     event: Event,
     subscriptions: Subscription[],
-  ): Promise<{ success: boolean; error?: string; failedSubscriptionId?: string }> {
+  ): Promise<{ success: boolean; error?: string; failedSubscriptionId?: string; succeededSubIds: string[] }> {
+    const succeededSubIds: string[] = [];
     for (const sub of subscriptions) {
       const timeoutMs = sub.timeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS;
 
       try {
         await this.withTimeout(sub.handler(event), timeoutMs);
+        succeededSubIds.push(sub.id);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { success: false, error: message, failedSubscriptionId: sub.id };
+        return { success: false, error: message, failedSubscriptionId: sub.id, succeededSubIds };
       }
     }
-    return { success: true };
+    return { success: true, succeededSubIds };
   }
 
   /** Race handler promise against a timeout. Best-effort kill via Promise.race. */
