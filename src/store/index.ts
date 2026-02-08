@@ -24,13 +24,13 @@ export interface SubscriptionRowDb {
 export interface InsertEventParams {
   id: string;
   type: string;
-  payload: string;
+  payload: unknown;          // Store serializes to JSON text (spec: EVENTBUS-SPECIFICATION.md:135)
   status: string;
   retryCount: number;
   createdAt: string;
   updatedAt: string;
   lastError?: string | null;
-  metadata?: string | null;
+  metadata?: Record<string, string> | null; // Store serializes to JSON text
 }
 
 export interface InsertSubscriptionParams {
@@ -101,17 +101,23 @@ export class SQLiteStore {
   // --- Event CRUD ---
 
   insertEvent(params: InsertEventParams): void {
+    const payloadJson = typeof params.payload === 'string'
+      ? params.payload
+      : JSON.stringify(params.payload);
+    const metadataJson = params.metadata != null
+      ? JSON.stringify(params.metadata)
+      : null;
     this.stmt(
       `INSERT INTO events (id, type, payload, status, retry_count, last_error, metadata, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       params.id,
       params.type,
-      params.payload,
+      payloadJson,
       params.status,
       params.retryCount,
       params.lastError ?? null,
-      params.metadata ?? null,
+      metadataJson,
       params.createdAt,
       params.updatedAt,
     );

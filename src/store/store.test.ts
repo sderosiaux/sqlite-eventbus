@@ -31,7 +31,7 @@ describe('SQLiteStore', () => {
   });
 
   afterEach(() => {
-    store.close();
+    store?.close();
     cleanupDb(dbPath);
   });
 
@@ -83,7 +83,7 @@ describe('SQLiteStore', () => {
     store.insertEvent({
       id,
       type: 'user.created',
-      payload: JSON.stringify({ name: 'Alice' }),
+      payload: { name: 'Alice' },  // raw object — store serializes
       status: 'pending',
       retryCount: 0,
       createdAt: now,
@@ -96,6 +96,45 @@ describe('SQLiteStore', () => {
     expect(event!.type).toBe('user.created');
     expect(event!.status).toBe('pending');
     expect(JSON.parse(event!.payload)).toEqual({ name: 'Alice' });
+  });
+
+  it('serializes payload as JSON text (spec: EVENTBUS-SPECIFICATION.md:135)', () => {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const rawPayload = { items: [1, 2, 3], nested: { key: 'value' } };
+    store.insertEvent({
+      id,
+      type: 'test',
+      payload: rawPayload,
+      status: 'pending',
+      retryCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const event = store.getEvent(id);
+    // payload must be stored as a JSON string, not [object Object]
+    expect(typeof event!.payload).toBe('string');
+    expect(JSON.parse(event!.payload)).toEqual(rawPayload);
+  });
+
+  it('serializes metadata as JSON text when provided', () => {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    store.insertEvent({
+      id,
+      type: 'test',
+      payload: {},
+      status: 'pending',
+      retryCount: 0,
+      createdAt: now,
+      updatedAt: now,
+      metadata: { source: 'api', traceId: 'abc-123' },
+    });
+
+    const event = store.getEvent(id);
+    expect(typeof event!.metadata).toBe('string');
+    expect(JSON.parse(event!.metadata!)).toEqual({ source: 'api', traceId: 'abc-123' });
   });
 
   it('returns undefined for non-existent event', () => {
