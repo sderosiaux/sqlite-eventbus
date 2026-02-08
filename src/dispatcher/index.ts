@@ -55,13 +55,8 @@ export class Dispatcher {
     // Transition to processing
     this.store.updateEventStatus(event.id, 'processing');
 
-    // Resolve retry policy: use per-subscription override from first matching sub
-    // (per-event tracking — merged from first matching subscription's retry config)
-    const subRetry = matching[0].retry;
-    const policy: RetryPolicy = {
-      ...DEFAULT_RETRY_POLICY,
-      ...subRetry,
-    };
+    // Resolve retry policy: merge all matching subscriptions' overrides (most permissive wins)
+    const policy = this.mergeRetryPolicies(matching);
 
     const maxAttempts = policy.maxRetries + 1;
     const errorHistory: string[] = [];
@@ -136,6 +131,33 @@ export class Dispatcher {
         setTimeout(() => reject(new Error(`Handler timeout after ${timeoutMs}ms`)), timeoutMs),
       ),
     ]);
+  }
+
+  /**
+   * Merge retry policies from all matching subscriptions.
+   * Each sub's partial override merges with defaults first, then across subs
+   * the most permissive value wins per field:
+   *   maxRetries: max, baseDelayMs: min, maxDelayMs: max, backoffMultiplier: max.
+   * If no subs have overrides, returns DEFAULT_RETRY_POLICY.
+   */
+  private mergeRetryPolicies(subscriptions: Subscription[]): RetryPolicy {
+    const overrides = subscriptions.filter((s) => s.retry);
+    if (overrides.length === 0) return { ...DEFAULT_RETRY_POLICY };
+
+    // Start from first override merged with defaults
+    const first = { ...DEFAULT_RETRY_POLICY, ...overrides[0].retry };
+    const result: RetryPolicy = { ...first };
+
+    // Merge remaining overrides — most permissive wins
+    for (let i = 1; i < overrides.length; i++) {
+      const merged = { ...DEFAULT_RETRY_POLICY, ...overrides[i].retry };
+      result.maxRetries = Math.max(result.maxRetries, merged.maxRetries);
+      result.baseDelayMs = Math.min(result.baseDelayMs, merged.baseDelayMs);
+      result.maxDelayMs = Math.max(result.maxDelayMs, merged.maxDelayMs);
+      result.backoffMultiplier = Math.max(result.backoffMultiplier, merged.backoffMultiplier);
+    }
+
+    return result;
   }
 
   /**

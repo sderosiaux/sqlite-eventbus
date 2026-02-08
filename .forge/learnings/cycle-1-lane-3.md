@@ -1,4 +1,4 @@
-# Learnings — Cycle 1, Lane 3: retry-and-dlq-routing (attempt 2)
+# Learnings — Cycle 1, Lane 3: dispatch-and-retry (attempt 3)
 
 ## FRICTION
 - Existing lane-2 test `records error on handler failure` (`src/dispatcher/dispatcher.test.ts:85`) assumed `lastError` was a plain string. Changing to JSON array required updating assertion to `JSON.parse` + `.toContain`.
@@ -19,6 +19,14 @@
 ## DECISION (continued)
 - **EventBus.publish() delegates to Dispatcher** (`src/bus/index.ts:98-99`): Removed inline sequential dispatch from publish(). Now creates Dispatcher in constructor, passes `DispatcherOptions` through. Bus test for handler failure updated: expects `dlq` instead of `processing` since Dispatcher handles full retry→DLQ lifecycle.
 - **EventBus constructor accepts DispatcherOptions** (`src/bus/index.ts:13-16`): Allows tests to inject `delayFn: async () => {}` for fast retry-related tests at the bus integration level.
+
+## FRICTION (attempt 3)
+- **Review V1**: Retry policy derived from `matching[0].retry` only. When two matching subs had different `maxRetries`, the second sub's override was ignored. Fix: `mergeRetryPolicies()` iterates all matching subs with overrides, takes most permissive per field (`src/dispatcher/index.ts:59-80`).
+- **Review V2**: CHK-006 recorded evidence line (`dispatcher.test.ts:77`) tested handler invocation ordering but not timeout protection. Fix: added timeout assertion test within CHK-006 describe block (`src/dispatcher/dispatcher.test.ts:93-105`).
+- Initial merge logic used `{ ...DEFAULT, ...sub.retry }` for base then `Math.max` against defaults — caused single-sub overrides with `maxRetries < 3` to always resolve to 3 (the default). Fix: start from first override's merged values, then merge remaining overrides only.
+
+## DECISION (attempt 3)
+- **Most-permissive merge for multi-sub retry policies** (`src/dispatcher/index.ts:59-80`): When N subs match, merge: `maxRetries=max`, `baseDelayMs=min`, `maxDelayMs=max`, `backoffMultiplier=max`. Ensures no subscription's retry budget is cut short by another sub's policy. If no subs have overrides, DEFAULT_RETRY_POLICY used.
 
 ## DEBT
 - None added in this attempt. Previous debt items (prepared statement caching, matchGlob edge cases) remain from lanes 1-2.

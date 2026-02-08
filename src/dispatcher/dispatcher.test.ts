@@ -90,6 +90,21 @@ describe('Dispatcher', () => {
       expect(store.getEvent(event.id)!.status).toBe('done');
     });
 
+    it('enforces timeout protection on handler invocation', async () => {
+      const subs = new Map<string, Subscription>();
+      const s = makeSub('test.*', async () => {
+        await new Promise((r) => setTimeout(r, 5000)); // would hang without timeout
+      }, { timeoutMs: 50, retry: { maxRetries: 0 } });
+      subs.set(s.id, s);
+
+      const event = makeEvent(store);
+      await dispatcher.dispatch(event, subs);
+
+      const row = store.getEvent(event.id)!;
+      expect(row.status).toBe('dlq');
+      expect(row.last_error).toContain('timeout');
+    });
+
     it('skips non-matching subscriptions', async () => {
       const calls: string[] = [];
       const subs = new Map<string, Subscription>();
@@ -298,6 +313,33 @@ describe('Dispatcher', () => {
 
       // maxRetries=1 → 2 total attempts
       expect(attempts).toBe(2);
+    });
+
+    it('merges conflicting retry overrides from multiple matching subscriptions (most permissive wins)', async () => {
+      let attempts = 0;
+      const subs = new Map<string, Subscription>();
+
+      // Sub 1: maxRetries=1 (lenient on delay)
+      const s1 = makeSub('test.*', async () => {
+        attempts++;
+        throw new Error(`fail-${attempts}`);
+      }, { retry: { maxRetries: 1, baseDelayMs: 1 } });
+      subs.set(s1.id, s1);
+
+      // Sub 2: maxRetries=4 (more retries)
+      const s2 = makeSub('test.event', async () => {
+        throw new Error('s2-fail');
+      }, { retry: { maxRetries: 4, baseDelayMs: 1 } });
+      subs.set(s2.id, s2);
+
+      const dispatcherFast = new Dispatcher(store, { delayFn: async () => {} });
+      const event = makeEvent(store);
+      await dispatcherFast.dispatch(event, subs);
+
+      // Most permissive: maxRetries=4 → 5 total attempts
+      // s1 increments `attempts` on each call → should be 5
+      expect(attempts).toBe(5);
+      expect(store.getEvent(event.id)!.status).toBe('dlq');
     });
   });
 
