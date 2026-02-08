@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { SQLiteStore } from '../store/index.js';
 import { Dispatcher } from '../dispatcher/index.js';
 import type { Event, EventHandler, SubscribeOptions, Subscription, SubscriptionRow } from '../types/index.js';
+import { DEFAULT_RETRY_POLICY } from '../types/index.js';
 
 export interface EventBusOptions {
   dbPath: string;
@@ -45,7 +46,10 @@ export class EventBus {
     const id = randomUUID();
     const now = new Date();
 
-    const sub: Subscription = { id, eventType, handler, createdAt: now, timeoutMs: opts?.timeoutMs };
+    const retryPolicy = opts?.retry
+      ? { ...DEFAULT_RETRY_POLICY, ...opts.retry }
+      : undefined;
+    const sub: Subscription = { id, eventType, handler, createdAt: now, timeoutMs: opts?.timeoutMs, retryPolicy };
     this.handlers.set(id, sub);
 
     this.store.insertSubscription({ id, eventType, createdAt: now });

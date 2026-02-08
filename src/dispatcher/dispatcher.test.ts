@@ -82,7 +82,7 @@ describe('CHK-006: Dispatcher invokes handlers with timeout protection', () => {
     expect(final?.status).toBe('done');
   });
 
-  it('records error on handler failure', async () => {
+  it('records error on handler failure and retries until DLQ', async () => {
     bus.subscribe('user.created', async () => {
       throw new Error('handler exploded');
     });
@@ -93,7 +93,9 @@ describe('CHK-006: Dispatcher invokes handlers with timeout protection', () => {
 
     const updated = bus.getStore().getEvent('evt-1');
     expect(updated?.lastError).toContain('handler exploded');
-    expect(updated?.retryCount).toBe(1);
+    // Default retry policy: maxRetries=3 → 4 total attempts → retryCount=4, status=dlq
+    expect(updated?.retryCount).toBe(4);
+    expect(updated?.status).toBe('dlq');
   });
 
   it('matches wildcard * subscription to any event type', async () => {

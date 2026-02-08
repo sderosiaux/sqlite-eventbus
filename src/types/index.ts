@@ -21,6 +21,7 @@ export type EventHandler = (event: Event) => Promise<void>;
 
 export interface SubscribeOptions {
   timeoutMs?: number;
+  retry?: Partial<RetryPolicy>;
 }
 
 export interface Subscription {
@@ -29,6 +30,7 @@ export interface Subscription {
   handler: EventHandler;
   createdAt: Date;
   timeoutMs?: number;
+  retryPolicy?: RetryPolicy;
 }
 
 export interface RetryPolicy {
