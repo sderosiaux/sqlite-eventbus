@@ -53,3 +53,16 @@ export interface SubscriptionRow {
   eventType: string;
   createdAt: Date;
 }
+
+export class EventBusShutdownError extends Error {
+  constructor() {
+    super('EventBusShutdownError');
+    this.name = 'EventBusShutdownError';
+  }
+}
+
+export interface RetryMetrics {
+  totalRetries: number;
+  successAfterRetry: number;
+  dlqCount: number;
+}

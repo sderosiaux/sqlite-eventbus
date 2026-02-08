@@ -1,8 +1,12 @@
-import type { Event, RetryPolicy, Subscription } from '../types/index.js';
+import type { Event, RetryPolicy, RetryMetrics, Subscription } from '../types/index.js';
 import { DEFAULT_RETRY_POLICY } from '../types/index.js';
 import type { SQLiteStore } from '../store/index.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const CIRCUIT_WINDOW_MS = 60_000;
+const CIRCUIT_PAUSE_MS = 30_000;
+const CIRCUIT_FAILURE_THRESHOLD = 0.5;
+const CIRCUIT_MIN_SAMPLES = 4;
 
 export interface DispatcherOptions {
   defaultTimeoutMs?: number;
@@ -30,11 +34,25 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+interface CircuitState {
+  outcomes: Array<{ timestamp: number; failed: boolean }>;
+  pausedUntil: number; // 0 = not paused
+}
+
 export class Dispatcher {
   private store: SQLiteStore;
   private handlers: Map<string, Subscription>;
   private defaultTimeoutMs: number;
   private defaultRetryPolicy: RetryPolicy;
+
+  /** Track in-flight dispatch promises for graceful shutdown. */
+  private inFlight: Set<Promise<void>> = new Set();
+
+  /** Circuit breaker state per subscription ID. */
+  private circuits: Map<string, CircuitState> = new Map();
+
+  /** Retry metrics per event type. */
+  private metrics: Map<string, RetryMetrics> = new Map();
 
   constructor(store: SQLiteStore, handlers: Map<string, Subscription>, opts?: DispatcherOptions) {
     this.store = store;
@@ -44,7 +62,38 @@ export class Dispatcher {
   }
 
   async dispatch(event: Event): Promise<void> {
-    const matching = this.findMatchingSubscriptions(event.type);
+    const promise = this.doDispatch(event);
+    this.inFlight.add(promise);
+    try {
+      await promise;
+    } finally {
+      this.inFlight.delete(promise);
+    }
+  }
+
+  /** Wait for all in-flight dispatches to complete. */
+  async drain(): Promise<void> {
+    await Promise.all([...this.inFlight]);
+  }
+
+  getMetrics(): Map<string, RetryMetrics> {
+    return new Map(this.metrics);
+  }
+
+  private ensureMetrics(eventType: string): RetryMetrics {
+    let m = this.metrics.get(eventType);
+    if (!m) {
+      m = { totalRetries: 0, successAfterRetry: 0, dlqCount: 0 };
+      this.metrics.set(eventType, m);
+    }
+    return m;
+  }
+
+  private async doDispatch(event: Event): Promise<void> {
+    const allMatching = this.findMatchingSubscriptions(event.type);
+
+    // Filter out circuit-broken subscriptions
+    const matching = allMatching.filter(sub => !this.isCircuitOpen(sub.id));
 
     if (matching.length === 0) {
       this.store.updateEventStatus(event.id, 'done');
@@ -53,45 +102,63 @@ export class Dispatcher {
 
     this.store.updateEventStatus(event.id, 'processing');
 
-    // Determine effective retry policy: use per-subscription if all matching have the same,
-    // otherwise use the most permissive (highest maxRetries) among them.
     const effectivePolicy = this.resolveRetryPolicy(matching);
     const maxAttempts = effectivePolicy.maxRetries + 1;
 
     const errorHistory: string[] = [];
+    const m = this.ensureMetrics(event.type);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      // Delay before retry (attempt 1 is immediate)
       const delayMs = computeDelay(attempt, effectivePolicy);
       await sleep(delayMs);
 
       let failed = false;
       let attemptError = '';
+      const failedSubIds: string[] = [];
+      const succeededSubIds: string[] = [];
 
       for (const sub of matching) {
+        if (this.isCircuitOpen(sub.id)) {
+          // Skip paused subscriptions during retry loop too
+          continue;
+        }
         const timeoutMs = sub.timeoutMs ?? this.defaultTimeoutMs;
         try {
           await this.invokeWithTimeout(sub, event, timeoutMs);
+          succeededSubIds.push(sub.id);
         } catch (err) {
           failed = true;
           attemptError = err instanceof Error ? err.message : String(err);
+          failedSubIds.push(sub.id);
         }
+      }
+
+      // Record circuit breaker outcomes
+      const now = Date.now();
+      for (const subId of succeededSubIds) {
+        this.recordCircuitOutcome(subId, now, false);
+      }
+      for (const subId of failedSubIds) {
+        this.recordCircuitOutcome(subId, now, true);
       }
 
       if (failed) {
         errorHistory.push(attemptError);
       }
 
-      // Update retry count in store with full error history
       const serializedErrors = JSON.stringify(errorHistory);
       this.store.updateEventRetry(event.id, attempt, serializedErrors);
 
       if (!failed) {
         this.store.updateEventStatus(event.id, 'done');
+        if (attempt > 1) {
+          m.totalRetries += attempt - 1;
+          m.successAfterRetry += 1;
+        }
         return;
       }
 
-      // Emit structured retry log for every failed attempt
+      // Emit structured retry log
       const nextDelay = attempt < maxAttempts ? computeDelay(attempt + 1, effectivePolicy) : 0;
       console.warn(JSON.stringify({
         level: 'warn',
@@ -105,14 +172,56 @@ export class Dispatcher {
       }));
     }
 
-    // All attempts exhausted → DLQ
+    // All attempts exhausted -> DLQ
     this.store.updateEventStatus(event.id, 'dlq');
+    m.totalRetries += effectivePolicy.maxRetries;
+    m.dlqCount += 1;
   }
 
+  // --- Circuit Breaker ---
+
+  private getCircuit(subId: string): CircuitState {
+    let c = this.circuits.get(subId);
+    if (!c) {
+      c = { outcomes: [], pausedUntil: 0 };
+      this.circuits.set(subId, c);
+    }
+    return c;
+  }
+
+  private isCircuitOpen(subId: string): boolean {
+    const c = this.circuits.get(subId);
+    if (!c || c.pausedUntil === 0) return false;
+    if (Date.now() >= c.pausedUntil) {
+      // Half-open: allow traffic again
+      c.pausedUntil = 0;
+      c.outcomes = [];
+      return false;
+    }
+    return true;
+  }
+
+  private recordCircuitOutcome(subId: string, timestamp: number, failed: boolean): void {
+    const c = this.getCircuit(subId);
+    c.outcomes.push({ timestamp, failed });
+
+    // Prune outcomes outside the 1-minute window
+    const cutoff = timestamp - CIRCUIT_WINDOW_MS;
+    c.outcomes = c.outcomes.filter(o => o.timestamp > cutoff);
+
+    // Check threshold
+    if (c.outcomes.length >= CIRCUIT_MIN_SAMPLES) {
+      const failures = c.outcomes.filter(o => o.failed).length;
+      const rate = failures / c.outcomes.length;
+      if (rate > CIRCUIT_FAILURE_THRESHOLD) {
+        c.pausedUntil = timestamp + CIRCUIT_PAUSE_MS;
+      }
+    }
+  }
+
+  // --- Retry policy resolution ---
+
   private resolveRetryPolicy(subs: Subscription[]): RetryPolicy {
-    // Per-subscription override takes precedence over default.
-    // If multiple subs have custom policies, use the most permissive (highest maxRetries)
-    // so no subscription is cut short.
     let hasCustom = false;
     let policy = this.defaultRetryPolicy;
     for (const sub of subs) {
@@ -154,9 +263,6 @@ export class Dispatcher {
 
 /**
  * Simple glob matcher for event type patterns.
- * - `*` as the entire pattern matches everything
- * - `*` as a segment matches exactly one segment (non-empty, no dots)
- * - Segments are separated by `.`
  */
 function matchGlob(pattern: string, eventType: string): boolean {
   if (pattern === '*') return true;
