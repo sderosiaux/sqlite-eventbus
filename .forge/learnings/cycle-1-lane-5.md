@@ -1,28 +1,33 @@
-# Learnings — Cycle 1, Lane 5: lifecycle-and-resilience (attempt 2)
+# Learnings — Cycle 1, Lane 5: lifecycle-and-resilience
 
 ## FRICTION
-- `destroy()` needed guard against double-close after `shutdown()` — `better-sqlite3` throws if you close an already-closed DB (`src/bus/index.ts:114`)
-- Circuit breaker tests needed `vi.useFakeTimers()` for the 30s resume test, but `Date.now()` inside `isCircuitOpen` uses real time. Had to ensure fake timers were set before dispatch, not after.
-- The Dispatcher's `dispatch()` was synchronous from caller perspective (no fire-and-forget). In-flight tracking via `Set<Promise>` required wrapping in `doDispatch` to separate the trackable promise from the awaited one (`src/dispatcher/index.ts:64-71`).
-- **Shutdown timeout test**: `publish()` awaits `dispatch()`, which awaits the handler. A test with a hanging handler cannot await `publish()` before calling `shutdown()` — it blocks forever. Must fire publish without awaiting, let it enter dispatch, then call shutdown. The timeout races `drain()` via `Promise.race` (`src/bus/shutdown.test.ts:65`).
+- `destroy()` needed guard against double-close after `shutdown()` — `better-sqlite3` throws if you close an already-closed DB.
+- Circuit breaker tests needed `vi.useFakeTimers()` for 30s resume test. `Date.now()` inside circuit breaker uses real time, so fake timers must be set before dispatch calls, not after.
+- `Dispatcher.dispatch()` is awaited by `publish()`. In-flight tracking via `Set<Promise>` tracks the dispatch promise; `finally()` removes it on completion.
+- **Shutdown timeout test**: `publish()` awaits `dispatch()`, which awaits the handler. A test with a hanging handler cannot await `publish()` before calling `shutdown()` — it blocks forever. Must fire publish without awaiting, let it enter dispatch, then call shutdown.
+- **Abandoned dispatch after shutdown**: When shutdown times out, abandoned dispatches try to use a closed DB. Solved via `storeOp()` wrapper in Dispatcher that catches "not open" TypeError silently (`src/dispatcher/index.ts`).
+- **Circuit breaker + sequential handlers**: `runHandlers` is sequential, abort-on-first-failure. When testing "circuit breaker only affects specific subscription", the healthy sub must come *before* the failing sub in Map iteration order, otherwise it never runs.
 
 ## GAP
-- Spec says "wait for in-flight dispatches to complete (with timeout)" (`EVENTBUS-SPECIFICATION.md:182`) but doesn't specify the timeout value. Chose 30s default (`DEFAULT_SHUTDOWN_TIMEOUT_MS`), configurable via `shutdownTimeoutMs` option.
-- Spec says "if >50% of events for a subscription fail in a 1-minute window" but doesn't define minimum sample size. Used `CIRCUIT_MIN_SAMPLES = 4` to avoid tripping the breaker on 1 failure out of 1 event (100% failure rate).
-- Spec doesn't clarify whether circuit-broken subscriptions should cause the entire dispatch to fail or just skip that subscription. Chose: skip the paused subscription, other healthy subscriptions still process normally.
+- Spec says "wait for in-flight dispatches to complete (with timeout)" but doesn't specify timeout value. Chose 30s default, configurable via `shutdownTimeoutMs`.
+- Spec says ">50% failure in 1-minute window" but doesn't define minimum sample size. Used 4 (`CIRCUIT_BREAKER_MIN_SAMPLES`) to avoid premature tripping.
+- Spec doesn't clarify whether circuit-broken subs should cause dispatch to fail or just skip. Chose: skip paused sub, other healthy subs still process normally.
 
 ## DECISION
-- **Shutdown timeout via `Promise.race`** (`src/bus/index.ts:97`): `shutdown()` races `drain()` against `setTimeout(resolve, shutdownTimeoutMs)`. If drain doesn't complete in time, shutdown proceeds to close the DB anyway. Abandoned in-flight handlers continue running but have no effect since the store is closed.
-- **`shutdownTimeoutMs` as EventBusOptions field** (`src/bus/index.ts:10`): Configurable per-instance. Default 30s matches handler timeout. Alternative: hardcoded constant — rejected because shutdown tolerance varies by use case.
-- **Circuit breaker minimum samples = 4**: Prevents premature tripping. With <4 samples, a single failure would be >50%. 4 gives meaningful signal.
-- **Metrics tracked in-memory on Dispatcher**: Not persisted. The spec says "track" — in-memory `Map<eventType, RetryMetrics>` is sufficient. No DB schema changes needed.
-- **`start()` increments retryCount before re-dispatch**: Per spec "increment retry_count". The crashed attempt counts as a failed attempt.
-- **Circuit breaker state lives on Dispatcher, not EventBus**: Dispatcher owns dispatch logic, so circuit state belongs there.
+- **Shutdown via `Promise.race`**: Races drain against timeout. If drain exceeds timeout, shutdown proceeds to close DB. Abandoned handlers silently fail via `storeOp()`.
+- **`shutdownTimeoutMs` configurable**: Default 30s matches handler timeout. Rejected hardcoded constant because shutdown tolerance varies by use case.
+- **Circuit breaker min samples = 4**: Prevents premature tripping. With <4 samples, a single failure would be >50%.
+- **Circuit breaker state per-subscription on Dispatcher**: In-memory `Map<subId, CircuitBreakerState>` with rolling 1-minute window of outcomes. States: closed/open/half-open.
+- **Half-open probe**: After 30s pause, next dispatch allows single probe. Probe success → close circuit (clear outcomes). Probe failure → re-open circuit (reset openedAt).
+- **Retry metrics in-memory on Dispatcher**: `Map<eventType, RetryMetrics>` with totalRetries, successAfterRetry, dlqCount, totalEvents. No persistence needed.
+- **`start()` increments retryCount before re-dispatch**: Crashed attempt counts as a failed attempt.
+- **`storeOp()` wrapper**: All store calls in `dispatch()` go through try-catch that silently swallows "database not open" errors. Prevents unhandled rejections from abandoned dispatches after shutdown.
 
 ## SURPRISE
-- `Promise.race` for shutdown timeout means the losing promise (either drain or timeout) is **abandoned but still runs**. In the timeout case, drain's constituent promises (the in-flight handlers) keep executing. This is fine — the handlers are orphaned and the closed DB will cause their store calls to throw, which propagates to the abandoned publish promise.
-- `vi.useFakeTimers()` works with `Date.now()` in vitest — unlike some setups where only `setTimeout`/`setInterval` are mocked. This simplified the circuit breaker resume test.
+- `Promise.race` for shutdown means losing promise is abandoned but still runs. The handlers are orphaned; their store calls fail silently via `storeOp()`.
+- `vi.useFakeTimers()` works with `Date.now()` in vitest, simplifying circuit breaker tests.
+- Circuit breaker outcome tracking works well with the retry loop — each retry attempt's success/failure feeds into the circuit breaker state for the relevant subscription.
 
 ## DEBT
-- **Abandoned handlers after shutdown timeout**: If shutdown times out, handlers continue executing in the background with a closed DB. Their errors propagate to the publish caller's promise. No cleanup mechanism exists. Acceptable for a single-process bus — the process is likely shutting down anyway.
-- **Circuit breaker half-open state is simple reset**: On resume, outcomes are cleared entirely rather than using a proper half-open probe pattern. Acceptable for a single-process event bus.
+- **No cleanup of abandoned handlers**: If shutdown times out, handlers continue in background. Acceptable for single-process bus — process is likely shutting down.
+- **Circuit breaker window pruning**: Outcomes outside 1-minute window are pruned on every `recordOutcome()` call. No background cleanup. Long-idle subs accumulate no stale entries since no events arrive.

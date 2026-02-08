@@ -4,14 +4,31 @@ import { Dispatcher } from '../dispatcher/index.js';
 import type { DispatcherOptions } from '../dispatcher/index.js';
 import type { Event, EventHandler, Subscription, SubscribeOptions } from '../types/index.js';
 
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
+
+export interface EventBusOptions extends DispatcherOptions {
+  shutdownTimeoutMs?: number; // default: 30s
+}
+
+export class EventBusShutdownError extends Error {
+  constructor() {
+    super('EventBusShutdownError');
+    this.name = 'EventBusShutdownError';
+  }
+}
+
 export class EventBus {
   private store: SQLiteStore;
   private handlers = new Map<string, Subscription>();
   private dispatcher: Dispatcher;
+  private shuttingDown = false;
+  private inFlight = new Set<Promise<void>>();
+  private shutdownTimeoutMs: number;
 
-  constructor(dbPath: string, dispatcherOptions?: DispatcherOptions) {
+  constructor(dbPath: string, options?: EventBusOptions) {
     this.store = new SQLiteStore(dbPath);
-    this.dispatcher = new Dispatcher(this.store, dispatcherOptions);
+    this.dispatcher = new Dispatcher(this.store, options);
+    this.shutdownTimeoutMs = options?.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
   }
 
   /** CHK-004: Register handler with optional filter by event type. Returns subscription ID. */
@@ -22,6 +39,8 @@ export class EventBus {
     handlerOrOptions?: EventHandler | SubscribeOptions,
     maybeOptions?: SubscribeOptions,
   ): string {
+    if (this.shuttingDown) throw new EventBusShutdownError();
+
     let eventType: string;
     let handler: EventHandler;
     let options: SubscribeOptions | undefined;
@@ -31,7 +50,6 @@ export class EventBus {
       handler = handlerOrOptions as EventHandler;
       options = maybeOptions;
     } else {
-      // Unfiltered subscribe — matches all events
       eventType = '*';
       handler = eventTypeOrHandler;
       options = handlerOrOptions as SubscribeOptions | undefined;
@@ -40,14 +58,12 @@ export class EventBus {
     const id = randomUUID();
     const now = new Date();
 
-    // Persist metadata to store
     this.store.insertSubscription({
       id,
       eventType,
       createdAt: now.toISOString(),
     });
 
-    // Store handler in memory
     this.handlers.set(id, {
       id,
       eventType,
@@ -68,10 +84,11 @@ export class EventBus {
 
   /** CHK-003: Persist event then dispatch; await dispatch completion; return event ID. */
   async publish(eventType: string, payload: unknown, metadata?: Record<string, string>): Promise<string> {
+    if (this.shuttingDown) throw new EventBusShutdownError();
+
     const id = randomUUID();
     const now = new Date().toISOString();
 
-    // Persist event
     this.store.insertEvent({
       id,
       type: eventType,
@@ -83,7 +100,6 @@ export class EventBus {
       metadata: metadata ?? null,
     });
 
-    // Build deserialized Event object for handlers
     const event: Event = {
       id,
       type: eventType,
@@ -94,23 +110,74 @@ export class EventBus {
       metadata,
     };
 
-    // Delegate to Dispatcher (handles matching, timeout, retry, DLQ)
-    await this.dispatcher.dispatch(event, this.handlers);
+    // Track in-flight dispatch for graceful shutdown
+    const dispatchPromise = this.dispatcher.dispatch(event, this.handlers);
+    this.inFlight.add(dispatchPromise);
+    dispatchPromise.finally(() => this.inFlight.delete(dispatchPromise));
 
+    await dispatchPromise;
     return id;
   }
 
-  /** Expose handlers map (for Dispatcher in lane 3). */
+  /**
+   * CHK-012: Graceful shutdown.
+   * 1. Stop accepting new publishes (throw EventBusShutdownError)
+   * 2. Wait for in-flight dispatches (with timeout)
+   * 3. Close SQLite connection
+   */
+  async shutdown(): Promise<void> {
+    if (this.shuttingDown) return; // idempotent
+    this.shuttingDown = true;
+
+    // Wait for all in-flight dispatches, with timeout
+    if (this.inFlight.size > 0) {
+      const drain = Promise.allSettled([...this.inFlight]);
+      const timeout = new Promise<void>((resolve) =>
+        setTimeout(resolve, this.shutdownTimeoutMs),
+      );
+      await Promise.race([drain, timeout]);
+    }
+
+    this.store.close();
+  }
+
+  /**
+   * CHK-013: Startup recovery — re-dispatch events stuck in 'processing'.
+   * 1. Query events with status 'processing'
+   * 2. Reset to 'pending' (increment retry_count)
+   * 3. Re-dispatch through normal flow
+   */
+  async start(): Promise<void> {
+    const stuckEvents = this.store.getEventsByStatus('processing');
+    for (const row of stuckEvents) {
+      // Increment retry count to account for the crashed attempt
+      const newRetryCount = row.retry_count + 1;
+      this.store.updateEventRetry(row.id, newRetryCount, row.last_error ?? '');
+      // Reset to pending
+      this.store.updateEventStatus(row.id, 'pending');
+
+      // Build Event object and re-dispatch
+      const event: Event = {
+        id: row.id,
+        type: row.type,
+        payload: JSON.parse(row.payload),
+        createdAt: new Date(row.created_at),
+        status: 'pending',
+        retryCount: newRetryCount,
+      };
+      await this.dispatcher.dispatch(event, this.handlers);
+    }
+  }
+
   getHandlers(): Map<string, Subscription> {
     return this.handlers;
   }
 
-  /** Expose store (for Dispatcher/DLQ in later lanes). */
   getStore(): SQLiteStore {
     return this.store;
   }
 
-  /** Raw close for test teardown. Graceful shutdown is lane 5. */
+  /** Raw close for test teardown. Guards double-close after shutdown(). */
   destroy(): void {
     this.store.close();
   }
