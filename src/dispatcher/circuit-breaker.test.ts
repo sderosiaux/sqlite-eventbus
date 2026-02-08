@@ -333,4 +333,57 @@ describe('Circuit Breaker Half-Open Probe (CHK-016)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('clears probeInFlight when earlier sub fails before half-open sub executes', async () => {
+    vi.useFakeTimers();
+    try {
+      const subs = new Map<string, Subscription>();
+      let probeCalls = 0;
+      let failCalls = 0;
+
+      // First sub: always fails (runs first in sequential execution)
+      const sAlwaysFail = makeSub('test.*', async () => {
+        failCalls++;
+        throw new Error('always fail');
+      }, { retry: { maxRetries: 0, baseDelayMs: 1 } });
+
+      // Second sub: this is the one we'll put into half-open
+      const sProbe = makeSub('test.*', async () => {
+        probeCalls++;
+        throw new Error('fail');
+      }, { retry: { maxRetries: 0, baseDelayMs: 1 } });
+
+      subs.set(sAlwaysFail.id, sAlwaysFail);
+      subs.set(sProbe.id, sProbe);
+
+      // Trip sProbe's circuit: need 4 failures recorded against it.
+      // With sAlwaysFail first, sAlwaysFail fails → sProbe never executes.
+      // But per-sub success recording won't help here.
+      // Instead, set up sProbe alone first to trip its circuit.
+      const soloSubs = new Map<string, Subscription>();
+      soloSubs.set(sProbe.id, sProbe);
+      for (let i = 0; i < 4; i++) {
+        await dispatcher.dispatch(makeEvent(store), soloSubs);
+      }
+      expect(probeCalls).toBe(4);
+
+      // sProbe is now circuit-open. Advance past 30s → half-open.
+      vi.advanceTimersByTime(30_001);
+
+      // Now dispatch with both subs. sAlwaysFail runs first and fails.
+      // sProbe is in half-open with probeInFlight=true but never executes.
+      // The fix must clear probeInFlight for sProbe.
+      await dispatcher.dispatch(makeEvent(store), subs);
+      expect(failCalls).toBe(1); // sAlwaysFail ran
+      expect(probeCalls).toBe(4); // sProbe was NOT executed (earlier sub failed first)
+
+      // Key assertion: sProbe's probeInFlight must be cleared.
+      // Next dispatch should allow sProbe to be probed again (not permanently stuck).
+      // Dispatch with sProbe alone to verify it gets the probe slot.
+      await dispatcher.dispatch(makeEvent(store), soloSubs);
+      expect(probeCalls).toBe(5); // probe was allowed through
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

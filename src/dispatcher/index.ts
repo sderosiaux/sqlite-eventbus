@@ -187,11 +187,24 @@ export class Dispatcher {
       }
 
       // Record per-sub outcomes: success for subs that ran before the failure, failure for the failed sub
+      const executedIds = new Set(result.succeededSubIds);
+      if (result.failedSubscriptionId) executedIds.add(result.failedSubscriptionId);
+
       for (const succeededId of result.succeededSubIds) {
         this.recordOutcome(succeededId, true);
       }
       if (result.failedSubscriptionId) {
         this.recordOutcome(result.failedSubscriptionId, false);
+      }
+
+      // Release probeInFlight for half-open subs that were never executed
+      for (const sub of matching) {
+        if (!executedIds.has(sub.id)) {
+          const cb = this.circuitBreakers.get(sub.id);
+          if (cb && cb.state === 'half-open' && cb.probeInFlight) {
+            cb.probeInFlight = false;
+          }
+        }
       }
 
       // Record failure
