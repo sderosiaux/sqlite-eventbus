@@ -177,11 +177,15 @@ Subscriptions use glob patterns:
 
 Use a simple glob matcher — no regex, no wildcards beyond `*`.
 
+When `subscribe()` is called without an `eventType` parameter, it defaults to `*` (matches all events). The `*` pattern is stored in the subscriptions table. <!-- forge:cycle-1 -->
+
 ### Dispatcher Retry Logic
 
 <!-- forge:cycle-1: clarified multi-subscription, sequential, error storage -->
 
 When an event matches multiple subscriptions, handlers are invoked **sequentially** (not concurrently). Failure tracking is **per-event**, not per-subscription: if any handler fails, the event's `retryCount` increments and `lastError` captures the error. The event stays in `processing` for retry.
+
+For circuit breaker outcome recording, track results **per-subscription**: record `success` for each sub whose handler completed before the failure, and `failure` for the sub that failed. Subs after the failure point are not executed and receive no outcome. (→ see **RETRY-POLICY.md** circuit breaker state machine) <!-- forge:cycle-1 -->
 
 ```
 attempt 1: immediate
@@ -246,9 +250,9 @@ This handles the case where the process crashed mid-dispatch.
 
 ## Future Work (derived from cycle 1) <!-- forge:cycle-1 -->
 
-- [ ] **Prepared statement caching** in SQLiteStore — cache as class properties instead of per-call creation
-- [ ] **Add `dlq_at` timestamp** to events table — `purge()` uses `created_at`, not DLQ entry time
-- [ ] **Circuit breaker half-open probe** — send single probe event before fully reopening (current: simple reset)
+- [x] **Prepared statement caching** in SQLiteStore — implemented via `Map<string, Statement>` with cache hit counter (CHK-014) <!-- forge:cycle-1 -->
+- [x] **Add `dlq_at` timestamp** to events table — column added; `purge()` uses `created_at` per spec (CHK-015) <!-- forge:cycle-1 -->
+- [x] **Circuit breaker half-open probe** — single-probe enforcement via `probeInFlight` flag with deadlock-safe cleanup (CHK-016) <!-- forge:cycle-1 -->
 
 ---
 
@@ -288,4 +292,16 @@ This handles the case where the process crashed mid-dispatch.
 **Context**: Graceful shutdown must wait for in-flight handlers but cannot wait indefinitely.
 **Decision**: `shutdown()` races `drain()` against a configurable timeout (default 30s via `shutdownTimeoutMs`). On timeout, proceeds to close DB. Abandoned handlers continue running but store calls will throw on the closed DB.
 **Alternatives**: Hardcoded timeout — rejected; shutdown tolerance varies by use case.
+**Status**: Accepted
+
+### AD-7: Most-permissive merge for multi-subscription retry policies (cycle 1) <!-- forge:cycle-1 -->
+**Context**: When an event matches N subscriptions with different retry overrides, the system needs a single effective retry policy for the dispatch.
+**Decision**: Merge all overrides using most-permissive strategy per field: `maxRetries=max`, `baseDelayMs=min`, `maxDelayMs=max`, `backoffMultiplier=max`. Start from first override's values, not defaults, to avoid defaults overriding intentionally lower values.
+**Alternatives**: Use first matching sub's policy — rejected; silently ignores other subs' retry budgets. Per-sub independent retry — rejected; over-engineering for v1 with event-level tracking.
+**Status**: Accepted
+
+### AD-8: Half-open probe enforcement with deadlock prevention (cycle 1) <!-- forge:cycle-1 -->
+**Context**: Circuit breaker half-open state must allow exactly one probe dispatch before deciding to close or re-open the circuit.
+**Decision**: `probeInFlight` boolean per subscription, set synchronously during dispatch filtering, cleared on outcome recording. After sequential `runHandlers` failure, any half-open sub that was matched but not executed gets its `probeInFlight` cleared to prevent permanent deadlock.
+**Alternatives**: No probe limit (allow multiple concurrent probes) — rejected; defeats the purpose of half-open. Probe via separate codepath — rejected; unnecessary complexity.
 **Status**: Accepted

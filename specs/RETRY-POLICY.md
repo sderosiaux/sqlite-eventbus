@@ -25,6 +25,19 @@ bus.subscribe('order.*', handler, {
 
 Partial overrides merge with defaults (spread, not replace).
 
+### Multi-Subscription Merge <!-- forge:cycle-1 -->
+
+When an event matches N subscriptions with different retry overrides, the Dispatcher merges all overrides into a single **most-permissive** policy for that dispatch:
+
+| Field | Merge strategy |
+|-------|---------------|
+| `maxRetries` | `Math.max` across all overrides |
+| `baseDelayMs` | `Math.min` across all overrides |
+| `maxDelayMs` | `Math.max` across all overrides |
+| `backoffMultiplier` | `Math.max` across all overrides |
+
+If no subscriptions have overrides, `DEFAULT_RETRY_POLICY` is used. The merge starts from the first override's values (not from defaults) to avoid defaults overriding intentionally lower per-subscription values.
+
 ## Delay Calculation
 
 ```
@@ -42,7 +55,20 @@ delay(attempt) = min(baseDelayMs * backoffMultiplier^(attempt - 1), maxDelayMs)
 | 7 | 30000ms (capped) |
 
 - [ ] **Jitter**: Add ±10% random jitter to prevent thundering herd
-- [ ] **Circuit breaker**: If > 50% of events for a subscription fail in a 1-minute window (minimum 4 samples to avoid premature tripping), pause that subscription for 30 seconds before resuming. Circuit-broken subscriptions are **skipped** during dispatch; other healthy subscriptions process normally. Circuit breaker state lives on Dispatcher (in-memory, not persisted). <!-- forge:cycle-1 -->
+- [ ] **Circuit breaker**: If > 50% of events for a subscription fail in a 1-minute window (minimum 4 samples to avoid premature tripping), pause that subscription for 30 seconds before resuming. Circuit-broken subscriptions are **skipped** during dispatch; other healthy subscriptions process normally. Circuit breaker state lives on Dispatcher (in-memory `Map<subId, CircuitBreakerState>`, not persisted). <!-- forge:cycle-1 -->
+
+#### Circuit Breaker State Machine <!-- forge:cycle-1 -->
+
+```
+closed ──(>50% fail, ≥4 samples in 1min)──→ open
+open ──(30s elapsed)──→ half-open
+half-open ──(probe succeeds)──→ closed
+half-open ──(probe fails)──→ open
+```
+
+**Half-open probe enforcement**: A `probeInFlight` flag per subscription ensures only one probe dispatch runs at a time. Set synchronously during dispatch filtering; cleared on outcome recording. If a half-open sub is skipped because an earlier sub in sequential dispatch failed first, the `probeInFlight` flag must be cleared explicitly to prevent permanent deadlock.
+
+**Per-sub outcome recording**: When sequential `runHandlers` fails, record `success` for each sub that completed before the failure, then `failure` for the failed sub. Subs after the failure point get no outcome (they were not executed).
 
 ## Retry Observability
 
