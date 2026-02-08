@@ -16,5 +16,9 @@
 ## SURPRISE
 - The `errorHistory` array naturally serves as an audit trail — its length equals the number of failed attempts, which is independently useful for diagnostics beyond just the error messages themselves.
 
+## DECISION (continued)
+- **EventBus.publish() delegates to Dispatcher** (`src/bus/index.ts:98-99`): Removed inline sequential dispatch from publish(). Now creates Dispatcher in constructor, passes `DispatcherOptions` through. Bus test for handler failure updated: expects `dlq` instead of `processing` since Dispatcher handles full retry→DLQ lifecycle.
+- **EventBus constructor accepts DispatcherOptions** (`src/bus/index.ts:13-16`): Allows tests to inject `delayFn: async () => {}` for fast retry-related tests at the bus integration level.
+
 ## DEBT
 - None added in this attempt. Previous debt items (prepared statement caching, matchGlob edge cases) remain from lanes 1-2.

@@ -1,14 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { SQLiteStore } from '../store/index.js';
+import { Dispatcher } from '../dispatcher/index.js';
+import type { DispatcherOptions } from '../dispatcher/index.js';
 import type { Event, EventHandler, Subscription, SubscribeOptions } from '../types/index.js';
-import { matchGlob } from './glob.js';
 
 export class EventBus {
   private store: SQLiteStore;
   private handlers = new Map<string, Subscription>();
+  private dispatcher: Dispatcher;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, dispatcherOptions?: DispatcherOptions) {
     this.store = new SQLiteStore(dbPath);
+    this.dispatcher = new Dispatcher(this.store, dispatcherOptions);
   }
 
   /** CHK-004: Register handler with optional filter by event type. Returns subscription ID. */
@@ -91,45 +94,10 @@ export class EventBus {
       metadata,
     };
 
-    // Find matching subscriptions
-    const matching = this.getMatchingSubscriptions(eventType);
-
-    if (matching.length === 0) {
-      this.store.updateEventStatus(id, 'done');
-      return id;
-    }
-
-    // Transition to processing
-    this.store.updateEventStatus(id, 'processing');
-
-    // Dispatch sequentially (learning from cycle-1-lane-2)
-    let failed = false;
-    for (const sub of matching) {
-      try {
-        await sub.handler(event);
-      } catch {
-        failed = true;
-        // Event stays in processing for retry logic (lane 3)
-        break;
-      }
-    }
-
-    if (!failed) {
-      this.store.updateEventStatus(id, 'done');
-    }
+    // Delegate to Dispatcher (handles matching, timeout, retry, DLQ)
+    await this.dispatcher.dispatch(event, this.handlers);
 
     return id;
-  }
-
-  /** Get matching subscriptions for an event type using glob matching. */
-  private getMatchingSubscriptions(eventType: string): Subscription[] {
-    const result: Subscription[] = [];
-    for (const sub of this.handlers.values()) {
-      if (matchGlob(sub.eventType, eventType)) {
-        result.push(sub);
-      }
-    }
-    return result;
   }
 
   /** Expose handlers map (for Dispatcher in lane 3). */

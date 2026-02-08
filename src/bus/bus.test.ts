@@ -191,12 +191,18 @@ describe('EventBus', () => {
       expect(row!.status).toBe('done');
     });
 
-    it('event remains in processing on handler failure (for retry in lane 3)', async () => {
-      bus.subscribe('test', async () => { throw new Error('boom'); });
-      const eventId = await bus.publish('test', {});
-      const row = bus.getStore().getEvent(eventId);
-      // Event stays processing — retry logic (lane 3) will handle it
-      expect(row!.status).toBe('processing');
+    it('moves event to DLQ after handler exhausts retries', async () => {
+      // Use bus with no-delay dispatcher so retries don't actually wait
+      const tmpPath = createTmpDbPath();
+      const fastBus = new EventBus(tmpPath, { delayFn: async () => {} });
+      fastBus.subscribe('test', async () => { throw new Error('boom'); }, {
+        retry: { maxRetries: 0 },
+      });
+      const eventId = await fastBus.publish('test', {});
+      const row = fastBus.getStore().getEvent(eventId);
+      expect(row!.status).toBe('dlq');
+      fastBus.destroy();
+      cleanupDb(tmpPath);
     });
 
     it('publishes with no matching subscriptions marks event as done', async () => {
