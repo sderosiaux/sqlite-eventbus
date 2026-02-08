@@ -19,11 +19,16 @@ export interface Event {
 
 export type EventHandler = (event: Event) => Promise<void>;
 
+export interface SubscribeOptions {
+  timeoutMs?: number;
+}
+
 export interface Subscription {
   id: string;
   eventType: string;
   handler: EventHandler;
   createdAt: Date;
+  timeoutMs?: number;
 }
 
 export interface RetryPolicy {

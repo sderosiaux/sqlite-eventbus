@@ -1,32 +1,53 @@
 import { randomUUID } from 'node:crypto';
 import { SQLiteStore } from '../store/index.js';
-import type { EventHandler, Subscription, SubscriptionRow } from '../types/index.js';
+import { Dispatcher } from '../dispatcher/index.js';
+import type { Event, EventHandler, SubscribeOptions, Subscription, SubscriptionRow } from '../types/index.js';
 
 export interface EventBusOptions {
   dbPath: string;
+  defaultTimeoutMs?: number;
+}
+
+export interface PublishOptions {
+  metadata?: Record<string, string>;
 }
 
 export class EventBus {
   private store: SQLiteStore;
+  private dispatcher: Dispatcher;
   /** In-memory handler registry keyed by subscription ID. */
   private handlers: Map<string, Subscription> = new Map();
 
   constructor(opts: EventBusOptions) {
     this.store = new SQLiteStore(opts.dbPath);
-    // Hydrate in-memory handlers from persisted subscriptions is not possible
-    // because handlers are functions (not serializable). On restart, subscribe must
-    // be called again. We keep the DB subscriptions table for traceability and
-    // for future lanes that need subscription metadata.
+    this.dispatcher = new Dispatcher(this.store, this.handlers, {
+      defaultTimeoutMs: opts.defaultTimeoutMs,
+    });
   }
 
-  subscribe(eventType: string, handler: EventHandler): string {
+  async publish(type: string, payload: unknown, opts?: PublishOptions): Promise<string> {
+    const id = randomUUID();
+    const event: Event = {
+      id,
+      type,
+      payload,
+      createdAt: new Date(),
+      status: 'pending',
+      retryCount: 0,
+      metadata: opts?.metadata,
+    };
+    this.store.insertEvent(event);
+    await this.dispatcher.dispatch(event);
+    return id;
+  }
+
+  subscribe(eventType: string, handler: EventHandler, opts?: SubscribeOptions): string {
     const id = randomUUID();
     const now = new Date();
 
-    const sub: Subscription = { id, eventType, handler, createdAt: now };
+    const sub: Subscription = { id, eventType, handler, createdAt: now, timeoutMs: opts?.timeoutMs };
     this.handlers.set(id, sub);
 
-    // Persist subscription metadata (handler is memory-only)
     this.store.insertSubscription({ id, eventType, createdAt: now });
 
     return id;
@@ -38,22 +59,18 @@ export class EventBus {
     return existed || dbDeleted;
   }
 
-  /** Returns subscription metadata (no handler exposed). */
   getSubscriptions(): SubscriptionRow[] {
     return this.store.getAllSubscriptions();
   }
 
-  /** Get the underlying store — needed by Dispatcher and other modules in later lanes. */
   getStore(): SQLiteStore {
     return this.store;
   }
 
-  /** Get in-memory handler map — needed by Dispatcher. */
   getHandlers(): Map<string, Subscription> {
     return this.handlers;
   }
 
-  /** Tear down — closes DB. For tests and shutdown. */
   destroy(): void {
     this.store.close();
   }
