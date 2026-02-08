@@ -22,4 +22,4 @@
 | CHK-017 | RETRY-POLICY.md:44 | checkbox | **Jitter**: Add ±10% random jitter to prevent thundering herd | 3 | src/dispatcher/dispatcher.test.ts:397 | 509d1c6 | DONE |
 | CHK-018 | RETRY-POLICY.md:45 | checkbox | **Circuit breaker**: If > 50% of events for a subscription fail in a 1-minute window (minimum 4 samples), pause subscription for 30s. Circuit-broken subscriptions skipped during dispatch. State on Dispatcher (in-memory). | 5 | - | - | PENDING |
 | CHK-019 | RETRY-POLICY.md:64 | checkbox | **Retry metrics**: Track total retries, success-after-retry rate, DLQ rate per event type | 5 | - | - | PENDING |
-| CHK-020 | RETRY-POLICY.md:65 | checkbox | **Handler timeout**: Default 30s, configurable per subscription via `SubscribeOptions.timeoutMs`. Kill is best-effort via `Promise.race`. | 3 | src/dispatcher/dispatcher.test.ts:125 | 509d1c6 | DONE |
+| CHK-020 | RETRY-POLICY.md:65 | checkbox | **Handler timeout**: Default 30s, configurable per subscription via `SubscribeOptions.timeoutMs`. Kill is best-effort via `Promise.race`. | 3 | src/dispatcher/dispatcher.test.ts:125,156,160 | 9b13e14 | DONE |

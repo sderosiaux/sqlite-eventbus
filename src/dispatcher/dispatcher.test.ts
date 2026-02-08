@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Dispatcher } from './index.js';
+import { Dispatcher, DEFAULT_HANDLER_TIMEOUT_MS } from './index.js';
 import { SQLiteStore } from '../store/index.js';
 import type { Event, Subscription, RetryPolicy } from '../types/index.js';
 import { DEFAULT_RETRY_POLICY } from '../types/index.js';
@@ -151,6 +151,35 @@ describe('Dispatcher', () => {
       await dispatcher.dispatch(event, subs);
 
       expect(store.getEvent(event.id)!.status).toBe('done');
+    });
+
+    it('default timeout constant is 30s', () => {
+      expect(DEFAULT_HANDLER_TIMEOUT_MS).toBe(30_000);
+    });
+
+    it('applies default 30s timeout when timeoutMs is omitted', async () => {
+      vi.useFakeTimers();
+      try {
+        const subs = new Map<string, Subscription>();
+        // No timeoutMs — should use DEFAULT_HANDLER_TIMEOUT_MS (30s)
+        const s = makeSub('test.*', async () => {
+          await new Promise((r) => setTimeout(r, 60_000)); // hangs without timeout
+        }, { retry: { maxRetries: 0 } });
+        subs.set(s.id, s);
+
+        const event = makeEvent(store);
+        const dispatchPromise = dispatcher.dispatch(event, subs);
+
+        // Advance time past the 30s default timeout
+        await vi.advanceTimersByTimeAsync(30_001);
+        await dispatchPromise;
+
+        const row = store.getEvent(event.id)!;
+        expect(row.status).toBe('dlq');
+        expect(row.last_error).toContain('Handler timeout after 30000ms');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('uses per-subscription timeoutMs over default', async () => {

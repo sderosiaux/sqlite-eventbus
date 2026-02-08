@@ -3,7 +3,7 @@ import type { Event, Subscription, RetryPolicy } from '../types/index.js';
 import { DEFAULT_RETRY_POLICY } from '../types/index.js';
 import { matchGlob } from '../bus/glob.js';
 
-const DEFAULT_HANDLER_TIMEOUT_MS = 30_000;
+export const DEFAULT_HANDLER_TIMEOUT_MS = 30_000;
 
 export interface DispatcherOptions {
   /** Injectable delay for testing (default: real setTimeout-based delay) */

@@ -1,4 +1,4 @@
-# Learnings — Cycle 1, Lane 3: dispatch-and-retry (attempt 3)
+# Learnings — Cycle 1, Lane 3: dispatch-and-retry (attempt 4)
 
 ## FRICTION
 - Existing lane-2 test `records error on handler failure` (`src/dispatcher/dispatcher.test.ts:85`) assumed `lastError` was a plain string. Changing to JSON array required updating assertion to `JSON.parse` + `.toContain`.
@@ -27,6 +27,10 @@
 
 ## DECISION (attempt 3)
 - **Most-permissive merge for multi-sub retry policies** (`src/dispatcher/index.ts:59-80`): When N subs match, merge: `maxRetries=max`, `baseDelayMs=min`, `maxDelayMs=max`, `backoffMultiplier=max`. Ensures no subscription's retry budget is cut short by another sub's policy. If no subs have overrides, DEFAULT_RETRY_POLICY used.
+
+## FRICTION (attempt 4)
+- **Review V1**: CHK-020 tests only exercised custom `timeoutMs` overrides, never the default 30s. A regression in `DEFAULT_HANDLER_TIMEOUT_MS` would pass all tests. Fix: exported constant + `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync(30001)` to prove default 30s fires without waiting real time (`src/dispatcher/dispatcher.test.ts:130-155`).
+- `vi.useFakeTimers()` must wrap in try/finally with `vi.useRealTimers()` to avoid polluting other tests sharing the same process.
 
 ## DEBT
 - None added in this attempt. Previous debt items (prepared statement caching, matchGlob edge cases) remain from lanes 1-2.
