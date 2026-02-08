@@ -3,8 +3,8 @@
 
 | ID | Source | Ref | Work Item | Lane | Test | Commit | Status |
 |----|--------|-----|-----------|------|------|--------|--------|
-| CHK-001 | EVENTBUS-SPECIFICATION.md:64 | checkbox | **Shared types** (`Event`, `Subscription`, `RetryPolicy`, `EventStatus`) | 1 | src/types/types.test.ts:1 | 6d8f1db | DONE |
-| CHK-002 | EVENTBUS-SPECIFICATION.md:65 | checkbox | **SQLiteStore** with WAL mode, auto-migration, and CRUD for events + subscriptions | 1 | src/store/store.test.ts:40,101 | 6d8f1db | DONE |
+| CHK-001 | EVENTBUS-SPECIFICATION.md:64 | checkbox | **Shared types** (`Event`, `Subscription`, `RetryPolicy`, `EventStatus`) | 1 | src/types/types.test.ts:1 | 920b647 | DONE |
+| CHK-002 | EVENTBUS-SPECIFICATION.md:65 | checkbox | **SQLiteStore** with WAL mode, auto-migration, and CRUD for events + subscriptions | 1 | src/store/store.test.ts:40,101 | 920b647 | DONE |
 | CHK-003 | EVENTBUS-SPECIFICATION.md:66 | checkbox | **EventBus.publish()** persists event then dispatches; awaits dispatch completion; returns event ID | 2 | - | - | PENDING |
 | CHK-004 | EVENTBUS-SPECIFICATION.md:67 | checkbox | **EventBus.subscribe()** registers handler with optional filter by event type; accepts optional `SubscribeOptions`; returns subscription ID | 2 | - | - | PENDING |
 | CHK-005 | EVENTBUS-SPECIFICATION.md:68 | checkbox | **EventBus.unsubscribe()** removes handler by subscription ID | 2 | - | - | PENDING |
@@ -16,8 +16,8 @@
 | CHK-011 | EVENTBUS-SPECIFICATION.md:74 | checkbox | **DLQInspector.purge()** deletes dead events older than N days (inclusive: `created_at <= cutoff`) | 4 | - | - | PENDING |
 | CHK-012 | EVENTBUS-SPECIFICATION.md:75 | checkbox | **EventBus.shutdown()** graceful: wait for in-flight, reject new publishes | 5 | - | - | PENDING |
 | CHK-013 | EVENTBUS-SPECIFICATION.md:76 | checkbox | **Startup recovery** re-dispatches events stuck in `processing` state (crash recovery) | 5 | - | - | PENDING |
-| CHK-014 | EVENTBUS-SPECIFICATION.md:249 | checkbox | **Prepared statement caching** in SQLiteStore — cache as class properties instead of per-call creation | 1 | src/store/store.test.ts:348 | 6d8f1db | DONE |
-| CHK-015 | EVENTBUS-SPECIFICATION.md:250 | checkbox | **Add `dlq_at` timestamp** to events table — `purge()` uses `created_at`, not DLQ entry time | 1 | src/store/store.test.ts:56 | 6d8f1db | DONE |
+| CHK-014 | EVENTBUS-SPECIFICATION.md:249 | checkbox | **Prepared statement caching** in SQLiteStore — cache as class properties instead of per-call creation | 1 | src/store/store.test.ts:370 | 920b647 | DONE |
+| CHK-015 | EVENTBUS-SPECIFICATION.md:250 | checkbox | **Add `dlq_at` timestamp** to events table — `purge()` uses `created_at`, not DLQ entry time | 1 | src/store/store.test.ts:60,279,317 | 920b647 | DONE |
 | CHK-016 | EVENTBUS-SPECIFICATION.md:251 | checkbox | **Circuit breaker half-open probe** — send single probe event before fully reopening (current: simple reset) | 5 | - | - | PENDING |
 | CHK-017 | RETRY-POLICY.md:44 | checkbox | **Jitter**: Add ±10% random jitter to prevent thundering herd | 3 | - | - | PENDING |
 | CHK-018 | RETRY-POLICY.md:45 | checkbox | **Circuit breaker**: If > 50% of events for a subscription fail in a 1-minute window (minimum 4 samples), pause subscription for 30s. Circuit-broken subscriptions skipped during dispatch. State on Dispatcher (in-memory). | 5 | - | - | PENDING |

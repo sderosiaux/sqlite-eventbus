@@ -276,41 +276,63 @@ describe('SQLiteStore', () => {
     expect(event.dlq_at).toBeNull();
   });
 
-  it('purgeDlqEvents deletes events with dlq_at older than cutoff (inclusive)', () => {
-    const now = new Date().toISOString();
+  it('purgeDlqEvents deletes DLQ events with created_at older than cutoff (inclusive)', () => {
+    const oldCreatedAt = new Date(Date.now() - 10 * 86400000).toISOString(); // 10 days ago
+    const recentCreatedAt = new Date().toISOString();
 
     store.insertEvent({
       id: 'old-event',
       type: 'test',
-      payload: '{}',
+      payload: {},
       status: 'processing',
       retryCount: 3,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: oldCreatedAt,
+      updatedAt: oldCreatedAt,
     });
     store.insertEvent({
       id: 'recent-event',
       type: 'test',
-      payload: '{}',
+      payload: {},
       status: 'processing',
       retryCount: 3,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: recentCreatedAt,
+      updatedAt: recentCreatedAt,
     });
 
     store.moveEventToDlq('old-event', '"err"');
     store.moveEventToDlq('recent-event', '"err"');
 
-    // Backdate old-event's dlq_at to 10 days ago
-    const oldDlqAt = new Date(Date.now() - 10 * 86400000).toISOString();
-    store.rawExec('UPDATE events SET dlq_at = ? WHERE id = ?', oldDlqAt, 'old-event');
-
-    // Purge events with dlq_at older than 7 days
+    // Purge DLQ events with created_at <= 7 days ago (spec: purge uses created_at)
     const cutoff = new Date(Date.now() - 7 * 86400000).toISOString();
     const deleted = store.purgeDlqEvents(cutoff);
     expect(deleted).toBe(1);
     expect(store.getEvent('old-event')).toBeUndefined();
     expect(store.getEvent('recent-event')).toBeDefined();
+  });
+
+  it('purgeDlqEvents uses created_at not dlq_at for cutoff', () => {
+    // Event created recently but moved to DLQ with backdated dlq_at
+    const recentCreatedAt = new Date().toISOString();
+    store.insertEvent({
+      id: 'recent-but-old-dlq',
+      type: 'test',
+      payload: {},
+      status: 'processing',
+      retryCount: 3,
+      createdAt: recentCreatedAt,
+      updatedAt: recentCreatedAt,
+    });
+    store.moveEventToDlq('recent-but-old-dlq', '"err"');
+    // Backdate dlq_at to 10 days ago — but created_at is recent
+    const oldDlqAt = new Date(Date.now() - 10 * 86400000).toISOString();
+    store.rawExec('UPDATE events SET dlq_at = ? WHERE id = ?', oldDlqAt, 'recent-but-old-dlq');
+
+    // Purge with 7-day cutoff: event has old dlq_at but recent created_at
+    // Since purge uses created_at, this event should NOT be deleted
+    const cutoff = new Date(Date.now() - 7 * 86400000).toISOString();
+    const deleted = store.purgeDlqEvents(cutoff);
+    expect(deleted).toBe(0);
+    expect(store.getEvent('recent-but-old-dlq')).toBeDefined();
   });
 
   // --- Subscription CRUD ---
@@ -345,24 +367,46 @@ describe('SQLiteStore', () => {
 
   // --- Prepared statement caching (CHK-014) ---
 
-  it('reuses prepared statements across calls (CHK-014)', () => {
+  it('caches prepared statements and reuses them across calls (CHK-014)', () => {
     const now = new Date().toISOString();
-    // Multiple inserts should reuse the same cached statement
-    for (let i = 0; i < 10; i++) {
+    const hitsBefore = store.getCacheHits();
+
+    // First insert: creates the INSERT statement (cache miss)
+    store.insertEvent({
+      id: randomUUID(),
+      type: 'test',
+      payload: {},
+      status: 'pending',
+      retryCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const cacheSizeAfterFirst = store.getCacheSize();
+    expect(cacheSizeAfterFirst).toBeGreaterThan(0);
+
+    // Subsequent inserts reuse the cached INSERT statement (cache hits)
+    for (let i = 0; i < 9; i++) {
       store.insertEvent({
         id: randomUUID(),
         type: 'test',
-        payload: '{}',
+        payload: {},
         status: 'pending',
         retryCount: 0,
         createdAt: now,
         updatedAt: now,
       });
     }
-    // If caching works, these should all succeed without issue
+
+    // Cache size should NOT grow — same SQL is reused
+    expect(store.getCacheSize()).toBe(cacheSizeAfterFirst);
+
+    // Cache hits must have increased: 9 subsequent inserts reused the statement
+    const hitsAfter = store.getCacheHits();
+    expect(hitsAfter - hitsBefore).toBeGreaterThanOrEqual(9);
+
+    // Verify data integrity
     expect(store.getEventsByStatus('pending')).toHaveLength(10);
-    // Verify cache is populated via the exposed cache size
-    expect(store.getCacheSize()).toBeGreaterThan(0);
   });
 
   // --- Close ---

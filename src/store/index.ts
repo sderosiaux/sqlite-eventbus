@@ -45,6 +45,7 @@ export class SQLiteStore {
 
   // Prepared statement cache (CHK-014)
   private stmtCache = new Map<string, Statement>();
+  private cacheHits = 0;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
@@ -81,16 +82,23 @@ export class SQLiteStore {
   /** Get or create a cached prepared statement */
   private stmt(sql: string): Statement {
     let s = this.stmtCache.get(sql);
-    if (!s) {
-      s = this.db.prepare(sql);
-      this.stmtCache.set(sql, s);
+    if (s) {
+      this.cacheHits++;
+      return s;
     }
+    s = this.db.prepare(sql);
+    this.stmtCache.set(sql, s);
     return s;
   }
 
   /** Expose cache size for testing (CHK-014) */
   getCacheSize(): number {
     return this.stmtCache.size;
+  }
+
+  /** Expose cache hit count — proves statements are reused, not re-created (CHK-014) */
+  getCacheHits(): number {
+    return this.cacheHits;
   }
 
   /** Execute a PRAGMA (for testing / config) */
@@ -171,10 +179,10 @@ export class SQLiteStore {
     ).run('pending', new Date().toISOString(), id);
   }
 
-  /** Purge DLQ events with dlq_at <= cutoff (inclusive). Returns count deleted. */
+  /** Purge DLQ events with created_at <= cutoff (inclusive). Returns count deleted. */
   purgeDlqEvents(cutoff: string): number {
     const result = this.stmt(
-      'DELETE FROM events WHERE status = ? AND dlq_at <= ?'
+      'DELETE FROM events WHERE status = ? AND created_at <= ?'
     ).run('dlq', cutoff);
     return result.changes;
   }
