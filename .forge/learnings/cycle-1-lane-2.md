@@ -1,23 +1,24 @@
-# Learnings — Cycle 1, Lane 2: core-dispatch-pipeline
+# Learnings — Cycle 1, Lane 2: core-eventbus
 
 ## FRICTION
-- Timeout testing requires real timers. Using short timeouts (50ms) vs long handler delays (500ms) gives reliable results, but tests are inherently slower than pure unit tests. No way around this with `Promise.race`-based timeout — `vi.useFakeTimers()` doesn't help with competing real async operations (`src/dispatcher/dispatcher.test.ts:117`).
+- `better-sqlite3` ABI mismatch recurred on session resume (NODE_MODULE_VERSION 141 vs 127). Required `npm rebuild better-sqlite3` before tests could run. The `postinstall` script doesn't help across Node version changes.
 
 ## GAP
-- Spec doesn't specify what happens when an event matches **multiple subscriptions** and one fails. Spec tracks retry/status at the event level (single `retryCount`, single `status`). Per-subscription delivery tracking is not modeled.
-- Spec says "publish persists then dispatches" but doesn't specify whether `publish()` awaits the dispatch or fires-and-forgets. We await it — callers know when dispatch completes.
-- Spec doesn't define `publish()` return value. We return the event ID (string) for consistency with `subscribe()` returning an ID.
+- Spec doesn't specify what happens when `publish()` has no matching subscriptions. Decision: mark event as `done` immediately (no-op dispatch).
+- Spec says "publish persists then dispatches" but doesn't say whether `publish()` awaits dispatch or fire-and-forgets. Decision: await dispatch — callers know when complete.
+- Spec doesn't define `publish()` return value. Returns event ID (string) for symmetry with `subscribe()`.
 
 ## DECISION
-- **Event-level failure tracking** (`src/dispatcher/index.ts:38-47`): If any matching handler fails, `retryCount` increments and `lastError` captures the last failure message. Event stays in `processing` state for lane 3's retry logic to pick up. Alternative: per-subscription delivery table — rejected as over-engineering for v1.
-- **Sequential handler invocation** (`src/dispatcher/index.ts:36`): Handlers for the same event are invoked sequentially (for-of loop), not concurrently. This simplifies error handling and prevents resource exhaustion. Lane 5 could optimize with concurrency if needed.
-- **Glob matcher as pure function** (`src/dispatcher/index.ts:80-93`): Standalone `matchGlob()` function, not a class method. Segment-by-segment comparison: `*` matches exactly one segment, standalone `*` matches everything. No regex involved.
-- **Dispatcher takes handler map reference** (`src/dispatcher/index.ts:17`): Dispatcher holds a reference to the EventBus's `Map<string, Subscription>`, not a copy. This means subscriptions added after Dispatcher creation are automatically visible. Trade-off: tighter coupling, but avoids synchronization bugs.
-- **Per-subscription timeout via `SubscribeOptions`** (`src/types/index.ts:23`): Extended `Subscription` type with optional `timeoutMs`. `subscribe()` now accepts an optional third argument `{ timeoutMs }`. Default 30s lives in Dispatcher, not in the type.
+- **publish() awaits dispatch** (`src/bus/index.ts:49`): Caller awaits dispatch completion. Fire-and-forget deferred to lane 5 (shutdown needs in-flight tracking).
+- **Sequential handler invocation** (`src/bus/index.ts:86-93`): For-of loop over matching subscriptions. Failure on any handler breaks loop, event stays `processing`. Lane 3 adds retry logic.
+- **Glob matcher as standalone function** (`src/bus/glob.ts:7-20`): Segment-by-segment comparison. `*` matches one segment. Standalone `*` matches everything. No regex.
+- **EventBus.destroy() for test teardown** (`src/bus/index.ts:115`): Raw DB close. Graceful `shutdown()` is lane 5.
+- **Handler failure leaves event in processing** (`src/bus/index.ts:91`): No retry/DLQ in lane 2 — just marks event as processing so lane 3 retry logic picks it up.
+- **No matching subscriptions → done** (`src/bus/index.ts:79-82`): If no handlers match, event transitions directly to done. No point retrying something nobody listens to.
 
 ## SURPRISE
-- `Promise.race` for timeout means the timed-out handler's promise is **abandoned but still runs** in the background. There's no way to truly cancel a JS async function. This is acceptable for the spec ("kill handler execution after timeout" is best-effort in single-threaded Node.js), but the handler may still mutate state after timeout.
+- All 24 bus tests passed on first implementation attempt (after ABI rebuild). The learnings from previous cycles about sequential dispatch, glob matching, and handler map reference were accurate and sufficient.
 
 ## DEBT
-- No structured logging for dispatch attempts yet. Spec's "Retry Observability" section (RETRY-POLICY.md:49-61) defines a log structure. Deferred to lane 3 where retry logic is implemented.
-- `matchGlob` doesn't handle edge cases like empty segments (`user..created`) or empty pattern. Not in spec, not worth handling.
+- `publish()` has no structured error recording on failure — just breaks and leaves event in `processing`. Lane 3 will add `retryCount` increment and `lastError` tracking.
+- No handler timeout in lane 2. Default 30s timeout is a lane 3 concern (CHK-020).
