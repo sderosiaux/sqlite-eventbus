@@ -78,6 +78,34 @@ export class SQLiteStore {
     return rows.map(rowToEvent);
   }
 
+  getDlqEvents(opts?: { limit?: number; offset?: number }): Event[] {
+    const limit = opts?.limit ?? 100;
+    const offset = opts?.offset ?? 0;
+    const rows = this.db.prepare(
+      'SELECT * FROM events WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+    ).all('dlq', limit, offset) as EventRow[];
+    return rows.map(rowToEvent);
+  }
+
+  countDlqEvents(): number {
+    const row = this.db.prepare('SELECT COUNT(*) as cnt FROM events WHERE status = ?').get('dlq') as { cnt: number };
+    return row.cnt;
+  }
+
+  resetDlqEvent(id: string): void {
+    const now = new Date().toISOString();
+    this.db.prepare(
+      'UPDATE events SET status = ?, retry_count = 0, last_error = NULL, updated_at = ? WHERE id = ? AND status = ?'
+    ).run('pending', now, id, 'dlq');
+  }
+
+  purgeDlqEvents(olderThan: Date): number {
+    const result = this.db.prepare(
+      'DELETE FROM events WHERE status = ? AND created_at <= ?'
+    ).run('dlq', olderThan.toISOString());
+    return result.changes;
+  }
+
   // --- Subscriptions ---
 
   insertSubscription(sub: SubscriptionRow): void {

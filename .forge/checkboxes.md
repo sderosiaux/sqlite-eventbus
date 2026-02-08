@@ -11,9 +11,9 @@
 | CHK-006 | EVENTBUS-SPECIFICATION.md:69 | checkbox | **Dispatcher** invokes handlers with timeout protection | 2 | `src/dispatcher/dispatcher.test.ts:20` | `4792b73` | DONE |
 | CHK-007 | EVENTBUS-SPECIFICATION.md:70 | checkbox | **Dispatcher retry** with exponential backoff (base delay, max delay, max retries) | 3 | `src/dispatcher/retry.test.ts:26` | `253a424` | DONE |
 | CHK-008 | EVENTBUS-SPECIFICATION.md:71 | checkbox | **Dispatcher DLQ routing** after max retries exhausted, with failure context | 3 | `src/dispatcher/retry.test.ts:174` | `253a424` | DONE |
-| CHK-009 | EVENTBUS-SPECIFICATION.md:72 | checkbox | **DLQInspector.list()** returns dead events with pagination | 4 | - | - | PENDING |
-| CHK-010 | EVENTBUS-SPECIFICATION.md:73 | checkbox | **DLQInspector.retry()** re-enqueues a single dead event for reprocessing | 4 | - | - | PENDING |
-| CHK-011 | EVENTBUS-SPECIFICATION.md:74 | checkbox | **DLQInspector.purge()** deletes dead events older than N days | 4 | - | - | PENDING |
+| CHK-009 | EVENTBUS-SPECIFICATION.md:72 | checkbox | **DLQInspector.list()** returns dead events with pagination | 4 | `src/dlq/dlq.test.ts:20` | `5cbcf17` | DONE |
+| CHK-010 | EVENTBUS-SPECIFICATION.md:73 | checkbox | **DLQInspector.retry()** re-enqueues a single dead event for reprocessing | 4 | `src/dlq/dlq.test.ts:73` | `5cbcf17` | DONE |
+| CHK-011 | EVENTBUS-SPECIFICATION.md:74 | checkbox | **DLQInspector.purge()** deletes dead events older than N days | 4 | `src/dlq/dlq.test.ts:113` | `5cbcf17` | DONE |
 | CHK-012 | EVENTBUS-SPECIFICATION.md:75 | checkbox | **EventBus.shutdown()** graceful: wait for in-flight, reject new publishes | 5 | - | - | PENDING |
 | CHK-013 | EVENTBUS-SPECIFICATION.md:76 | checkbox | **Startup recovery** re-dispatches events stuck in `processing` state (crash recovery) | 5 | - | - | PENDING |
 | CHK-014 | RETRY-POLICY.md:44 | checkbox | **Jitter**: Add ±10% random jitter to prevent thundering herd | 3 | `src/dispatcher/retry.test.ts:243` | `253a424` | DONE |
