@@ -1,24 +1,22 @@
-# Learnings — Cycle 1, Lane 2: core-eventbus
+# Learnings — Cycle 1, Lane 2: core-eventbus (attempt 2)
 
 ## FRICTION
-- `better-sqlite3` ABI mismatch recurred on session resume (NODE_MODULE_VERSION 141 vs 127). Required `npm rebuild better-sqlite3` before tests could run. The `postinstall` script doesn't help across Node version changes.
+- **Review V1**: Test for `publish()` await guarantee used sync side-effect (`received.push()`), which would pass even with fire-and-forget dispatch. Fixed: added async handler with 50ms delay, asserting `handlerFinished === true` after `await publish()` (`src/bus/bus.test.ts:120-127`).
+- **Review V1**: Test for persist-before-dispatch was implicit. Fixed: handler reads DB during execution to verify event row exists before dispatch completes (`src/bus/bus.test.ts:129-137`).
+- **Review V2**: `subscribe(eventType, handler)` required eventType as string. Spec says "optional filter by event type". Fixed with function overloads: `subscribe(handler)` defaults to `*` pattern (`src/bus/index.ts:15-17`).
+- `better-sqlite3` ABI mismatch continues across sessions. Always run `npm rebuild better-sqlite3` first.
 
 ## GAP
-- Spec doesn't specify what happens when `publish()` has no matching subscriptions. Decision: mark event as `done` immediately (no-op dispatch).
-- Spec says "publish persists then dispatches" but doesn't say whether `publish()` awaits dispatch or fire-and-forgets. Decision: await dispatch — callers know when complete.
-- Spec doesn't define `publish()` return value. Returns event ID (string) for symmetry with `subscribe()`.
+- Spec doesn't specify what `subscribe()` should store in DB when no eventType given. Decision: store `*` as event_type in subscriptions table.
+- Spec says "optional filter by event type" — could mean optional parameter or optional filtering logic. Chose: optional parameter via overload.
 
 ## DECISION
-- **publish() awaits dispatch** (`src/bus/index.ts:49`): Caller awaits dispatch completion. Fire-and-forget deferred to lane 5 (shutdown needs in-flight tracking).
-- **Sequential handler invocation** (`src/bus/index.ts:86-93`): For-of loop over matching subscriptions. Failure on any handler breaks loop, event stays `processing`. Lane 3 adds retry logic.
-- **Glob matcher as standalone function** (`src/bus/glob.ts:7-20`): Segment-by-segment comparison. `*` matches one segment. Standalone `*` matches everything. No regex.
-- **EventBus.destroy() for test teardown** (`src/bus/index.ts:115`): Raw DB close. Graceful `shutdown()` is lane 5.
-- **Handler failure leaves event in processing** (`src/bus/index.ts:91`): No retry/DLQ in lane 2 — just marks event as processing so lane 3 retry logic picks it up.
-- **No matching subscriptions → done** (`src/bus/index.ts:79-82`): If no handlers match, event transitions directly to done. No point retrying something nobody listens to.
+- **Function overloads for subscribe()** (`src/bus/index.ts:15-17`): Two signatures — `subscribe(eventType, handler, options?)` and `subscribe(handler, options?)`. Runtime dispatch checks `typeof` first arg. Unfiltered uses `*` pattern.
+- **Persist-before-dispatch test** (`src/bus/bus.test.ts:129-137`): Handler reads store during execution to verify row exists. This locks the ordering guarantee.
+- **Async await test** (`src/bus/bus.test.ts:120-127`): 50ms setTimeout in handler, assert flag after `await publish()`. Fire-and-forget would fail this.
 
 ## SURPRISE
-- All 24 bus tests passed on first implementation attempt (after ABI rebuild). The learnings from previous cycles about sequential dispatch, glob matching, and handler map reference were accurate and sufficient.
+- TypeScript overloads required careful typing of the implementation signature — `handlerOrOptions` parameter can be `EventHandler | SubscribeOptions`, requiring runtime type check (`typeof eventTypeOrHandler === 'string'`).
 
 ## DEBT
-- `publish()` has no structured error recording on failure — just breaks and leaves event in `processing`. Lane 3 will add `retryCount` increment and `lastError` tracking.
-- No handler timeout in lane 2. Default 30s timeout is a lane 3 concern (CHK-020).
+- None. All review violations addressed.

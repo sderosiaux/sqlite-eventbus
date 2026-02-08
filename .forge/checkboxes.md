@@ -5,9 +5,9 @@
 |----|--------|-----|-----------|------|------|--------|--------|
 | CHK-001 | EVENTBUS-SPECIFICATION.md:64 | checkbox | **Shared types** (`Event`, `Subscription`, `RetryPolicy`, `EventStatus`) | 1 | src/types/types.test.ts:1 | 920b647 | DONE |
 | CHK-002 | EVENTBUS-SPECIFICATION.md:65 | checkbox | **SQLiteStore** with WAL mode, auto-migration, and CRUD for events + subscriptions | 1 | src/store/store.test.ts:40,101 | 920b647 | DONE |
-| CHK-003 | EVENTBUS-SPECIFICATION.md:66 | checkbox | **EventBus.publish()** persists event then dispatches; awaits dispatch completion; returns event ID | 2 | src/bus/bus.test.ts:93 | a1ca418 | DONE |
-| CHK-004 | EVENTBUS-SPECIFICATION.md:67 | checkbox | **EventBus.subscribe()** registers handler with optional filter by event type; accepts optional `SubscribeOptions`; returns subscription ID | 2 | src/bus/bus.test.ts:35 | a1ca418 | DONE |
-| CHK-005 | EVENTBUS-SPECIFICATION.md:68 | checkbox | **EventBus.unsubscribe()** removes handler by subscription ID | 2 | src/bus/bus.test.ts:71 | a1ca418 | DONE |
+| CHK-003 | EVENTBUS-SPECIFICATION.md:66 | checkbox | **EventBus.publish()** persists event then dispatches; awaits dispatch completion; returns event ID | 2 | src/bus/bus.test.ts:114,120,129 | 511932e | DONE |
+| CHK-004 | EVENTBUS-SPECIFICATION.md:67 | checkbox | **EventBus.subscribe()** registers handler with optional filter by event type; accepts optional `SubscribeOptions`; returns subscription ID | 2 | src/bus/bus.test.ts:35,68,75,82 | 511932e | DONE |
+| CHK-005 | EVENTBUS-SPECIFICATION.md:68 | checkbox | **EventBus.unsubscribe()** removes handler by subscription ID | 2 | src/bus/bus.test.ts:92 | 511932e | DONE |
 | CHK-006 | EVENTBUS-SPECIFICATION.md:69 | checkbox | **Dispatcher** invokes handlers with timeout protection | 3 | - | - | PENDING |
 | CHK-007 | EVENTBUS-SPECIFICATION.md:70 | checkbox | **Dispatcher retry** with exponential backoff (base delay, max delay, max retries) | 3 | - | - | PENDING |
 | CHK-008 | EVENTBUS-SPECIFICATION.md:71 | checkbox | **Dispatcher DLQ routing** after max retries exhausted, with failure context | 3 | - | - | PENDING |

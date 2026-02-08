@@ -12,7 +12,28 @@ export class EventBus {
   }
 
   /** CHK-004: Register handler with optional filter by event type. Returns subscription ID. */
-  subscribe(eventType: string, handler: EventHandler, options?: SubscribeOptions): string {
+  subscribe(eventType: string, handler: EventHandler, options?: SubscribeOptions): string;
+  subscribe(handler: EventHandler, options?: SubscribeOptions): string;
+  subscribe(
+    eventTypeOrHandler: string | EventHandler,
+    handlerOrOptions?: EventHandler | SubscribeOptions,
+    maybeOptions?: SubscribeOptions,
+  ): string {
+    let eventType: string;
+    let handler: EventHandler;
+    let options: SubscribeOptions | undefined;
+
+    if (typeof eventTypeOrHandler === 'string') {
+      eventType = eventTypeOrHandler;
+      handler = handlerOrOptions as EventHandler;
+      options = maybeOptions;
+    } else {
+      // Unfiltered subscribe — matches all events
+      eventType = '*';
+      handler = eventTypeOrHandler;
+      options = handlerOrOptions as SubscribeOptions | undefined;
+    }
+
     const id = randomUUID();
     const now = new Date();
 

@@ -64,6 +64,27 @@ describe('EventBus', () => {
       const handlers = bus.getHandlers();
       expect(handlers.get(subId)?.handler).toBe(handler);
     });
+
+    it('supports unfiltered subscribe (no eventType) matching all events', async () => {
+      const received: string[] = [];
+      bus.subscribe(async (event) => { received.push(event.type); });
+
+      await bus.publish('user.created', {});
+      await bus.publish('order.shipped', {});
+      expect(received).toEqual(['user.created', 'order.shipped']);
+    });
+
+    it('unfiltered subscribe stores * as event_type in DB', () => {
+      const subId = bus.subscribe(async () => {});
+      const row = bus.getStore().getSubscription(subId);
+      expect(row!.event_type).toBe('*');
+    });
+
+    it('unfiltered subscribe accepts SubscribeOptions', () => {
+      const subId = bus.subscribe(async () => {}, { timeoutMs: 5000 });
+      const sub = bus.getHandlers().get(subId);
+      expect(sub?.timeoutMs).toBe(5000);
+    });
   });
 
   // --- CHK-005: unsubscribe ---
@@ -117,6 +138,30 @@ describe('EventBus', () => {
       expect(received).toHaveLength(1);
       expect(received[0].type).toBe('user.created');
       expect(received[0].payload).toEqual({ name: 'Bob' });
+    });
+
+    it('awaits async handler completion before returning (not fire-and-forget)', async () => {
+      let handlerFinished = false;
+      bus.subscribe('slow', async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        handlerFinished = true;
+      });
+
+      await bus.publish('slow', {});
+      // If publish() were fire-and-forget, handlerFinished would still be false
+      expect(handlerFinished).toBe(true);
+    });
+
+    it('persists event to DB before dispatching handlers', async () => {
+      let eventExistedInDbDuringHandler = false;
+      bus.subscribe('test.order', async (event) => {
+        // Check that event is already persisted when handler runs
+        const row = bus.getStore().getEvent(event.id);
+        eventExistedInDbDuringHandler = row !== undefined;
+      });
+
+      await bus.publish('test.order', { data: 1 });
+      expect(eventExistedInDbDuringHandler).toBe(true);
     });
 
     it('dispatches to multiple matching subscriptions', async () => {
